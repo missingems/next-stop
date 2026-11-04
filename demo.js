@@ -575,6 +575,7 @@ function gustSprite(angle, scale) {
 
 const BUS_LENGTH = 12;
 const APPROACH_METERS = 1500;
+const AVERAGE_SPEED = 6;
 const BUS_SVG = (operator) => `
 <svg viewBox="0 0 30 120" aria-hidden="true">
   <rect x="3" y="6" width="28" height="116" rx="6" fill="rgba(0,0,0,0.22)"/>
@@ -664,6 +665,7 @@ class Bus {
     this.bubbleVisible = true;
     this.crowded = false;
     this.applyBubbleOpacity();
+    this.updateChip();
   }
 
   add() {
@@ -725,17 +727,21 @@ class Bus {
       }
     }
 
+    this.updateChip();
+    const position = toLngLat(this.position);
+    this.marker.setLngLat(position).setRotation(this.route.heading(this.distance));
+    this.bubbleMarker.setLngLat(position);
+  }
+
+  updateChip() {
     const remaining = this.stopPoint - this.distance;
     const arriving = this.state === "dwelling" || remaining < 140;
-    const text = arriving ? "Arr" : `${Math.max(1, Math.round(remaining / (6 * 60)))}m`;
+    const text = arriving ? "Arr" : `${Math.max(1, Math.round(remaining / (AVERAGE_SPEED * 60)))}m`;
     if (text !== this.chipText) {
       this.chipText = text;
       this.chip.textContent = text;
       this.chip.classList.toggle("arriving", arriving);
     }
-    const position = toLngLat(this.position);
-    this.marker.setLngLat(position).setRotation(this.route.heading(this.distance));
-    this.bubbleMarker.setLngLat(position);
   }
 
   applyBubbleOpacity() {
@@ -746,7 +752,6 @@ class Bus {
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const AVERAGE_SPEED = 6;
 const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], stopMarker: null, dark: false, sky: null };
 
 function chooseArea(except) {
@@ -861,7 +866,7 @@ function firstArrival(row, now) {
     const wait = bus.state === "gone" ? Math.max(0, bus.wait) : (bus.route.length - bus.distance) / Math.max(bus.cruise, 1) + 5;
     return wait + (bus.stopPoint - bus.entry) / AVERAGE_SPEED;
   }
-  return ((((row.offset - now) % row.headway) + row.headway) % row.headway);
+  return ((((row.offset - now) % row.headway) + row.headway) % row.headway) + 180;
 }
 
 function updatePanel() {
