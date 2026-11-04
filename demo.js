@@ -197,7 +197,8 @@ function applyNight(layer, sourceLayer) {
   }
 }
 
-// Weather: the app's presets, drawn as calm screen-space overlays and ground-anchored cloud shadows.
+// Weather: the app's presets. The shade, haze, motes and gusts are screen-space overlays as in
+// the app; rain and clouds are drawn in the map by WeatherLayer.
 
 class Weather {
   constructor(map, canvas) {
@@ -206,14 +207,11 @@ class Weather {
     this.context = canvas.getContext("2d");
     this.sky = SKIES.clear;
     this.dark = false;
-    this.drops = [];
     this.motes = [];
     this.gusts = [];
     this.moteClock = 0;
     this.gustClock = 0;
     this.started = performance.now();
-    this.cloudSprites = Array.from({ length: 6 }, (_, i) => cloudSprite(i * 0.173 + 0.05));
-    this.shadowWindow = null;
     this.resize();
   }
 
@@ -230,16 +228,13 @@ class Weather {
     this.canvas.width = Math.round(this.width * scale);
     this.canvas.height = Math.round(this.height * scale);
     this.context.setTransform(scale, 0, 0, scale, 0, 0);
-    this.streakSprite = null;
   }
 
   set(sky, dark) {
     this.sky = sky;
     this.dark = dark;
-    this.drops = [];
     this.motes = [];
     this.gusts = [];
-    this.streakSprite = null;
     this.gustSprite = null;
     const shade = document.getElementById("shade");
     shade.style.background = dark ? "#000" : "rgb(56, 69, 87)";
@@ -251,16 +246,7 @@ class Weather {
     const end = sky.haze > 0 ? 0.12 : 0;
     haze.style.background = `linear-gradient(rgba(${tone[0]},${tone[1]},${tone[2]},${tone[3]}) 0%, rgba(${tone[0]},${tone[1]},${tone[2]},${end}) 70%)`;
     haze.style.opacity = String(Math.max(sky.haze, sky.rain * 0.5));
-    this.updateShadows(true);
     this.context.clearRect(0, 0, this.width, this.height);
-  }
-
-  get active() {
-    return !reduceMotion && (this.sky.rain > 0 || this.sky.haze > 0 || this.wind.speed >= 5 || this.shadowAlpha > 0.01);
-  }
-
-  get shadowAlpha() {
-    return this.dark ? 0 : this.sky.cloud * 0.28;
   }
 
   screenAngle(x, y) {
@@ -268,60 +254,11 @@ class Weather {
   }
 
   step(now, dt) {
-    if (this.shadowAlpha > 0.01) this.updateShadows(false, now);
+    if (reduceMotion || (this.sky.haze <= 0 && this.wind.speed < 5)) return;
     const ctx = this.context;
     ctx.clearRect(0, 0, this.width, this.height);
-    if (reduceMotion) return;
-    if (this.sky.rain > 0) this.drawRain(ctx, dt);
     if (this.sky.haze > 0) this.drawMotes(ctx, dt);
     if (this.wind.speed >= 5) this.drawGusts(ctx, dt, now);
-  }
-
-  drawRain(ctx, dt) {
-    const { x, y, speed } = this.wind;
-    const toward = speed > 0.01 ? [x / speed, y / speed] : [0.8, 0.6];
-    const lean = clamp(speed / 8, 0.22, 1.2) * 0.6;
-    const angle = this.screenAngle(toward[0], toward[1]);
-    const direction = [Math.cos(angle) * lean, 1];
-    const length = Math.hypot(direction[0], direction[1]);
-    direction[0] /= length;
-    direction[1] /= length;
-    const key = direction[0].toFixed(2);
-    if (!this.streakSprite || this.streakKey !== key) {
-      this.streakKey = key;
-      const color = this.dark ? "rgba(191,204,224," : "rgba(41,56,77,";
-      this.streakSprite = streakSprite(direction, 46, 1.5, color, this.scale);
-    }
-    const count = Math.round(110 * this.sky.rain * Math.min(1, (this.width * this.height) / (1200 * 800)) + 30 * this.sky.rain);
-    while (this.drops.length < count) this.drops.push(this.newDrop(true));
-    const alpha = (this.dark ? 0.5 : 0.42) * (0.6 + 0.4 * this.sky.rain) * 1.7;
-    const sprite = this.streakSprite;
-    for (let i = 0; i < this.drops.length; i++) {
-      const drop = this.drops[i];
-      drop.age += dt;
-      if (drop.age >= drop.life) {
-        this.drops[i] = this.newDrop(false);
-        continue;
-      }
-      const fall = drop.age / drop.life;
-      const px = drop.x + direction[0] * drop.speed * drop.age;
-      const py = drop.y + direction[1] * drop.speed * drop.age;
-      ctx.globalAlpha = alpha * drop.alpha * smoothstep(0, 0.12, fall) * (1 - smoothstep(0.85, 1, fall));
-      ctx.drawImage(sprite.image, px - sprite.size / 2, py - sprite.size / 2, sprite.size * drop.scale, sprite.size * drop.scale);
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  newDrop(anywhere) {
-    return {
-      x: Math.random() * (this.width + 120) - 60,
-      y: Math.random() * (this.height + 80) - 120,
-      speed: 520 + Math.random() * 260,
-      life: 0.45 + Math.random() * 0.4,
-      age: anywhere ? Math.random() * 0.6 : 0,
-      scale: 0.75 + Math.random() * 0.5,
-      alpha: 0.7 + Math.random() * 0.3,
-    };
   }
 
   drawMotes(ctx, dt) {
@@ -393,51 +330,6 @@ class Weather {
     }
     ctx.globalAlpha = 1;
   }
-
-  // Cloud shadows live in a world-anchored image under the labels, drifting with the wind.
-
-  updateShadows(force, now = performance.now()) {
-    const map = this.map;
-    if (!this.ready) return;
-    const alpha = this.shadowAlpha;
-    if (alpha <= 0.01) {
-      if (map.getLayer("cloud-shadow")) map.setLayoutProperty("cloud-shadow", "visibility", "none");
-      return;
-    }
-    const { x, y, speed } = this.wind;
-    const toward = speed > 0.01 ? [x / speed, y / speed] : [0.8, 0.6];
-    const driftSpeed = Math.min(Math.max(speed, 1) * 6, 20);
-    const seconds = (now - this.started) / 1000;
-    const drift = [toward[0] * driftSpeed * seconds, toward[1] * driftSpeed * seconds];
-    const centre = toLocal(map.getCenter().toArray());
-    const existing = this.shadowWindow;
-    const span = 9000;
-    const stale = !existing || force || existing.sky !== this.sky ||
-      Math.hypot(centre[0] - (existing.centre[0] + drift[0] - existing.drift[0]), centre[1] - (existing.centre[1] + drift[1] - existing.drift[1])) > 2200;
-    if (stale) {
-      this.shadowWindow = { centre, drift, sky: this.sky, url: renderShadows(this.cloudSprites, centre, drift, span, this.sky.cloud, alpha) };
-    }
-    const current = this.shadowWindow;
-    const offset = [drift[0] - current.drift[0], drift[1] - current.drift[1]];
-    const pixels = Math.hypot(offset[0] - (current.offset?.[0] ?? 0), offset[1] - (current.offset?.[1] ?? 0)) * pixelsPerMeter(map.getZoom());
-    if (!stale && pixels < 0.6) return;
-    current.offset = offset;
-    const half = span / 2;
-    const [cx, cy] = [current.centre[0] + offset[0], current.centre[1] + offset[1]];
-    const coordinates = [[cx - half, cy - half], [cx + half, cy - half], [cx + half, cy + half], [cx - half, cy + half]].map(toLngLat);
-    const source = map.getSource("cloud-shadow");
-    if (!source) {
-      map.addSource("cloud-shadow", { type: "image", url: current.url, coordinates });
-      const layers = map.getStyle().layers;
-      const above = layers.findIndex((layer) => layer.id === "building-3d");
-      map.addLayer({ id: "cloud-shadow", type: "raster", source: "cloud-shadow", paint: { "raster-fade-duration": 0, "raster-resampling": "linear" } }, layers[above + 1]?.id);
-    } else if (stale) {
-      source.updateImage({ url: current.url, coordinates });
-    } else {
-      source.setCoordinates(coordinates);
-    }
-    map.setLayoutProperty("cloud-shadow", "visibility", "visible");
-  }
 }
 
 function hash(n) {
@@ -445,9 +337,9 @@ function hash(n) {
   return s - Math.floor(s);
 }
 
-function noiseField(size, seed) {
-  const field = new Float32Array(size * size);
-  let weight = 0.5, salt = seed * 1000;
+function noiseBytes(size) {
+  const values = new Float32Array(size * size);
+  let weight = 0.5, salt = 1000;
   for (const cells of [8, 16, 32]) {
     const lattice = Array.from({ length: cells * cells }, (_, i) => hash(i * 12.9898 + salt++ * 78.233));
     for (let y = 0; y < size; y++) {
@@ -459,92 +351,12 @@ function noiseField(size, seed) {
         const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
         const top = lattice[y0 * cells + x0] + (lattice[y0 * cells + x1] - lattice[y0 * cells + x0]) * sx;
         const bottom = lattice[y1 * cells + x0] + (lattice[y1 * cells + x1] - lattice[y1 * cells + x0]) * sx;
-        field[y * size + x] += (top + (bottom - top) * sy) * weight;
+        values[y * size + x] += (top + (bottom - top) * sy) * weight;
       }
     }
     weight *= 0.5;
   }
-  return (u, v) => {
-    const fx = ((u % 1) + 1) % 1 * size, fy = ((v % 1) + 1) % 1 * size;
-    const x0 = Math.floor(fx) % size, y0 = Math.floor(fy) % size;
-    const x1 = (x0 + 1) % size, y1 = (y0 + 1) % size;
-    const tx = fx - Math.floor(fx), ty = fy - Math.floor(fy);
-    const top = field[y0 * size + x0] + (field[y0 * size + x1] - field[y0 * size + x0]) * tx;
-    const bottom = field[y1 * size + x0] + (field[y1 * size + x1] - field[y1 * size + x0]) * tx;
-    return (top + (bottom - top) * ty) / 0.875;
-  };
-}
-
-let sharedNoise;
-function cloudSprite(seed) {
-  sharedNoise ??= noiseField(128, 1);
-  const size = 96;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  const image = ctx.createImageData(size, size);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const lx = (x + 0.5) / (size / 2) - 1, ly = (y + 0.5) / (size / 2) - 1;
-      const u = lx * 0.22 + seed * 7, v = ly * 0.22 + seed * 7;
-      const detail = sharedNoise(u, v) * 0.7 + sharedNoise(u * 2.3 + 0.37, v * 2.3 + 0.37) * 0.3;
-      const body = 1 - smoothstep(0.2, 1, Math.hypot(lx, ly * 1.2));
-      const shape = smoothstep(0, 1, clamp((body * 1.25 + detail * 0.7 - 0.75) * 1.5, 0, 1)) * body;
-      image.data[(y * size + x) * 4 + 3] = Math.round(shape * 255);
-    }
-  }
-  ctx.putImageData(image, 0, 0);
-  return canvas;
-}
-
-function renderShadows(sprites, centre, drift, span, cloud, alpha) {
-  const size = 512;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  const field = 30000;
-  const metersPerPixel = span / size;
-  const count = Math.round(200 * Math.min(cloud, 1));
-  ctx.globalAlpha = alpha;
-  for (let i = 0; i < count; i++) {
-    const n = i + 0.5;
-    const seed = [hash(n * 4.13 + 0.3) * field + drift[0], hash(n * 6.71 + 0.9) * field + drift[1]];
-    const wrapped = seed.map((value, axis) => centre[axis] + ((((value - centre[axis]) / field + 0.5) % 1 + 1) % 1 - 0.5) * field);
-    const radius = (900 + (2400 - 900) * hash(n * 3.3 + 1.7)) / metersPerPixel;
-    const px = (wrapped[0] - centre[0] + span / 2) / metersPerPixel;
-    const py = (wrapped[1] - centre[1] + span / 2) / metersPerPixel;
-    if (px < -radius || py < -radius || px > size + radius || py > size + radius) continue;
-    ctx.drawImage(sprites[Math.floor(hash(n * 7.7) * sprites.length)], px - radius, py - radius, radius * 2, radius * 2);
-  }
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "destination-in";
-  const edge = ctx.createRadialGradient(size / 2, size / 2, size * 0.3, size / 2, size / 2, size * 0.5);
-  edge.addColorStop(0, "rgba(0,0,0,1)");
-  edge.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = edge;
-  ctx.fillRect(0, 0, size, size);
-  return canvas.toDataURL("image/png");
-}
-
-function streakSprite(direction, length, width, color, scale) {
-  const size = Math.ceil(length + 4);
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = Math.ceil(size * scale);
-  const ctx = canvas.getContext("2d");
-  ctx.scale(scale, scale);
-  const tail = [size / 2 - direction[0] * length / 2, size / 2 - direction[1] * length / 2];
-  const head = [size / 2 + direction[0] * length / 2, size / 2 + direction[1] * length / 2];
-  const gradient = ctx.createLinearGradient(tail[0], tail[1], head[0], head[1]);
-  gradient.addColorStop(0, `${color}0)`);
-  gradient.addColorStop(1, `${color}1)`);
-  ctx.strokeStyle = gradient;
-  ctx.lineWidth = width;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(...tail);
-  ctx.lineTo(...head);
-  ctx.stroke();
-  return { image: canvas, size };
+  return Uint8Array.from(values, (value) => Math.round(clamp(value / 0.875, 0, 1) * 255));
 }
 
 function gustSprite(angle, scale) {
@@ -1539,6 +1351,25 @@ function invert(m) {
   return inv.map((v) => v / det);
 }
 
+function glProgram(gl, vertex, fragment) {
+  const result = gl.createProgram();
+  for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    gl.attachShader(result, shader);
+  }
+  gl.linkProgram(result);
+  if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(result));
+  const uniforms = {};
+  for (let i = 0; i < gl.getProgramParameter(result, gl.ACTIVE_UNIFORMS); i++) {
+    const name = gl.getActiveUniform(result, i).name;
+    uniforms[name] = gl.getUniformLocation(result, name);
+  }
+  return { program: result, uniforms };
+}
+
 const POLE_HEIGHT = 3.07;
 const CURB_OFFSET = 4;
 
@@ -1563,24 +1394,7 @@ class SceneryLayer {
   onAdd(map, gl) {
     this.map = map;
     this.gl = gl;
-    const program = (vertex, fragment) => {
-      const result = gl.createProgram();
-      for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
-        const shader = gl.createShader(type);
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
-        gl.attachShader(result, shader);
-      }
-      gl.linkProgram(result);
-      if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(result));
-      const uniforms = {};
-      for (let i = 0; i < gl.getProgramParameter(result, gl.ACTIVE_UNIFORMS); i++) {
-        const name = gl.getActiveUniform(result, i).name;
-        uniforms[name] = gl.getUniformLocation(result, name);
-      }
-      return { program: result, uniforms };
-    };
+    const program = (vertex, fragment) => glProgram(gl, vertex, fragment);
     this.scenery = program(SCENERY_VERTEX, SCENERY_FRAGMENT);
     this.cast = program(CAST_VERTEX, CAST_FRAGMENT);
     this.busProgram = program(BUS_VERTEX, BUS_FRAGMENT);
@@ -1931,14 +1745,290 @@ function addScenery() {
 function applySkyToScenery() {
   if (!state.scenery || !state.sky) return;
   state.scenery.wind = state.sky.wind;
-  state.scenery.overcast = state.sky.cloud;
+  state.scenery.overcast = Math.min(1, state.sky.cloud * 0.7 + state.sky.rain);
+  if (state.weatherLayer) state.weatherLayer.sky = state.sky;
   state.map.triggerRepaint();
+}
+
+// Weather in the map: the app's MapWeatherLayer and WeatherShaders.metal. World-anchored drops
+// and ground splashes in the map's depth buffer, a noise-textured cloud layer seen when zoomed
+// out, and the clouds' shadows on the ground.
+
+const MAXIMUM_DROPS = 2600;
+const MAXIMUM_SPLASHES = 700;
+const MAXIMUM_CLOUDS = 200;
+const CLOUD_SPAN = 30000;
+const LOWEST_CLOUD = 900;
+const REANCHOR_METERS = 4000;
+
+const WEATHER_VERTEX = `#version 300 es
+precision highp float;
+uniform mat4 u_matrix;
+uniform vec4 u_volume, u_options, u_viewport, u_wind, u_cloud, u_shadow, u_origin;
+out vec2 v_local;
+out float v_alpha, v_seed;
+const float cloudSpan = ${CLOUD_SPAN}.0;
+const vec2 corners[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));
+float weatherHash(float n) { return fract(sin(n) * 43758.5453); }
+vec2 weatherWrap(vec2 p, vec2 center, float size) { return center + (fract((p - center) / size + 0.5) - 0.5) * size; }
+vec4 project(vec2 ground, float height) { return u_matrix * vec4(ground, height, 1.0); }
+vec2 weatherGust(vec2 ground) {
+  float gust = 1.0 + 0.25 * sin(u_options.x * 0.9 + ground.x * 0.013) * sin(u_options.x * 0.37 + ground.y * 0.011);
+  return u_wind.xy * gust;
+}
+void cloud(out vec2 center, out float altitude, out float radius) {
+  float n = float(gl_InstanceID) + 0.5;
+  vec2 seed = vec2(weatherHash(n * 4.13 + 0.3), weatherHash(n * 6.71 + 0.9)) * cloudSpan;
+  center = weatherWrap(seed - u_origin.xy, u_volume.xy, cloudSpan);
+  altitude = mix(900.0, 1400.0, weatherHash(n * 9.1));
+  radius = mix(900.0, 2400.0, weatherHash(n * 3.3 + 1.7));
+  v_seed = weatherHash(n * 7.7);
+}
+`;
+
+const DROP_VERTEX = WEATHER_VERTEX + `
+void main() {
+  float n = float(gl_InstanceID);
+  float size = u_volume.z;
+  vec2 ground = weatherWrap(vec2(weatherHash(n * 1.37 + 0.11), weatherHash(n * 2.71 + 0.53)) * size, u_volume.xy, size);
+  float speed = mix(0.85, 1.15, weatherHash(n * 3.17 + 0.7));
+  float fall = fract(u_options.x * speed / u_options.y + weatherHash(n * 5.3 + 0.2));
+  float height = u_volume.w * (1.0 - fall);
+  float span = u_viewport.w * speed;
+  vec2 slant = weatherGust(ground);
+  vec4 tail = project(ground + slant * (height + span), height + span);
+  vec4 head = project(ground + slant * height, height);
+  v_seed = 0.0;
+  if (tail.w <= 0.0 || head.w <= 0.0) {
+    gl_Position = vec4(2, 2, 2, 1);
+    v_local = vec2(0);
+    v_alpha = 0.0;
+    return;
+  }
+  vec2 halfViewport = u_viewport.xy * 0.5;
+  vec2 direction = (head.xy / head.w - tail.xy / tail.w) * halfViewport;
+  float reach = length(direction);
+  vec2 along = reach > 0.001 ? direction / reach : vec2(0, 1);
+  vec2 across = vec2(-along.y, along.x);
+  float width = u_viewport.z;
+  float stretch = max(0.0, width * 2.0 - reach) * 0.5;
+  bool front = gl_VertexID >= 2;
+  float side = (gl_VertexID & 1) == 1 ? 1.0 : -1.0;
+  vec4 position = front ? head : tail;
+  position.xy += (across * side * width * 0.5 + along * (front ? stretch : -stretch)) / halfViewport * position.w;
+  gl_Position = position;
+  v_local = vec2(side, front ? 1.0 : 0.0);
+  v_alpha = smoothstep(0.0, 0.12, fall) * (1.0 - smoothstep(0.92, 1.0, fall));
+}`;
+
+const SPLASH_VERTEX = WEATHER_VERTEX + `
+void main() {
+  float n = float(gl_InstanceID) + 7919.0;
+  float t = u_options.x / (u_options.y * 0.6) + weatherHash(n * 1.91);
+  float cycle = floor(t);
+  float age = fract(t);
+  float size = u_volume.z;
+  vec2 seed = vec2(weatherHash(n * 0.73 + cycle * 17.13), weatherHash(n * 1.29 + cycle * 31.7));
+  vec2 ground = weatherWrap(seed * size, u_volume.xy, size);
+  float largest = mix(0.35, 0.7, weatherHash(n * 2.3));
+  float radius = largest * (0.2 + 0.8 * sqrt(age));
+  vec2 corner = corners[gl_VertexID];
+  gl_Position = project(ground + corner * radius, 0.05);
+  v_local = corner;
+  v_seed = 0.0;
+  v_alpha = (1.0 - age) * (1.0 - age) * smoothstep(1.5, 4.0, largest * u_options.z);
+}`;
+
+const CLOUD_VERTEX = WEATHER_VERTEX + `
+void main() {
+  vec2 center;
+  float altitude, radius;
+  cloud(center, altitude, radius);
+  vec2 corner = corners[gl_VertexID];
+  gl_Position = project(center + corner * radius, altitude);
+  v_local = corner;
+  v_alpha = u_cloud.x * smoothstep(1.3, 2.4, u_cloud.z / altitude);
+}`;
+
+const CLOUD_SHADOW_VERTEX = WEATHER_VERTEX + `
+void main() {
+  vec2 center;
+  float altitude, radius;
+  cloud(center, altitude, radius);
+  vec2 corner = corners[gl_VertexID];
+  gl_Position = project(center + u_shadow.xy * altitude + corner * radius, 0.1);
+  v_local = corner;
+  v_alpha = u_shadow.z;
+}`;
+
+const WEATHER_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec4 u_color, u_cloud;
+uniform sampler2D u_noise;
+in vec2 v_local;
+in float v_alpha, v_seed;
+out vec4 fragColor;
+vec4 weatherColor(vec3 c, float alpha) {
+  c = clamp(c, 0.0, 1.0);
+  vec3 encoded = mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+  float a = clamp(alpha, 0.0, 1.0);
+  return vec4(encoded * a, a);
+}
+float cloudShape() {
+  vec2 uv = v_local * 0.22 + v_seed * 7.0;
+  float detail = texture(u_noise, uv).r * 0.7 + texture(u_noise, uv * 2.3 + 0.37).r * 0.3;
+  float body = 1.0 - smoothstep(0.2, 1.0, length(v_local * vec2(1.0, 1.2)));
+  return smoothstep(0.0, 1.0, clamp((body * 1.25 + detail * 0.7 - 0.75) * 1.5, 0.0, 1.0)) * body;
+}
+`;
+
+const DROP_FRAGMENT = WEATHER_FRAGMENT + `
+void main() {
+  float alpha = v_alpha * v_local.y * v_local.y * (1.0 - abs(v_local.x));
+  fragColor = weatherColor(u_color.rgb, alpha * u_color.a);
+}`;
+
+const SPLASH_FRAGMENT = WEATHER_FRAGMENT + `
+void main() {
+  float d = length(v_local);
+  float ring = smoothstep(0.5, 0.8, d) * (1.0 - smoothstep(0.84, 1.0, d));
+  fragColor = weatherColor(u_color.rgb, v_alpha * ring * u_color.a);
+}`;
+
+const CLOUD_FRAGMENT = WEATHER_FRAGMENT + `
+void main() {
+  float shape = cloudShape();
+  vec3 lit = u_cloud.w > 0.5 ? vec3(0.16, 0.17, 0.2) : vec3(0.97, 0.98, 1.0);
+  float underside = smoothstep(-0.9, 0.6, v_local.y);
+  fragColor = weatherColor(lit * mix(1.0, 0.82, underside * (1.0 - shape * 0.5)), shape * v_alpha);
+}`;
+
+const CLOUD_SHADOW_FRAGMENT = WEATHER_FRAGMENT + `
+void main() { fragColor = vec4(0.0, 0.0, 0.0, clamp(cloudShape() * v_alpha, 0.0, 1.0)); }`;
+
+class WeatherLayer {
+  constructor() {
+    this.id = "weather";
+    this.type = "custom";
+    this.renderingMode = "3d";
+    this.sky = SKIES.clear;
+    this.dark = false;
+    this.rain = 0;
+    this.cloud = 0;
+    this.drift = [0, 0];
+    this.anchor = null;
+    this.epoch = performance.now();
+    this.last = null;
+  }
+
+  onAdd(map, gl) {
+    this.map = map;
+    this.drop = glProgram(gl, DROP_VERTEX, DROP_FRAGMENT);
+    this.splash = glProgram(gl, SPLASH_VERTEX, SPLASH_FRAGMENT);
+    this.cloudProgram = glProgram(gl, CLOUD_VERTEX, CLOUD_FRAGMENT);
+    this.shadow = glProgram(gl, CLOUD_SHADOW_VERTEX, CLOUD_SHADOW_FRAGMENT);
+    this.empty = gl.createVertexArray();
+    this.noise = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.noise);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 128, 128, 0, gl.RED, gl.UNSIGNED_BYTE, noiseBytes(128));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    for (const [key, value] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.REPEAT], [gl.TEXTURE_WRAP_T, gl.REPEAT]]) gl.texParameteri(gl.TEXTURE_2D, key, value);
+  }
+
+  render(gl, options) {
+    const map = this.map;
+    const now = performance.now();
+    const dt = this.last === null ? 0 : Math.min((now - this.last) / 1000, 0.1);
+    this.last = now;
+    const ease = Math.min(1, dt / 1.2);
+    this.rain += ((reduceMotion ? 0 : this.sky.rain) - this.rain) * ease;
+    this.cloud += (this.sky.cloud - this.cloud) * ease;
+    if (this.rain < 0.01 && this.cloud < 0.01) return;
+
+    const [windX, windY] = this.sky.wind;
+    const speed = Math.hypot(windX, windY);
+    const toward = speed > 0.01 ? [windX / speed, windY / speed] : [0.8, 0.6];
+    const lean = clamp(speed / 8, 0.12, 1.2);
+    const driftSpeed = Math.max(speed, 1) * 6;
+    if (!reduceMotion) this.drift = this.drift.map((value, axis) => (value + toward[axis] * driftSpeed * dt) % CLOUD_SPAN);
+
+    const centre = maplibregl.MercatorCoordinate.fromLngLat(map.getCenter());
+    if (!this.anchor || Math.hypot(centre.x - this.anchor.x, centre.y - this.anchor.y) / this.anchor.meterInMercatorCoordinateUnits() > REANCHOR_METERS) this.anchor = centre;
+    const anchor = this.anchor;
+    const scale = anchor.meterInMercatorCoordinateUnits();
+    const matrix = multiply(options.defaultProjectionData.mainMatrix, [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, anchor.x, anchor.y, 0, 1]);
+    const local = [(centre.x - anchor.x) / scale, (centre.y - anchor.y) / scale];
+    const wrap = (value) => ((value % CLOUD_SPAN) + CLOUD_SPAN) % CLOUD_SPAN;
+    const origin = [wrap(anchor.x / scale - this.drift[0]), wrap(anchor.y / scale - this.drift[1])];
+    const metersPerPoint = 1 / pixelsPerMeter(map.getZoom());
+    const pixelRatio = gl.drawingBufferWidth / Math.max(map.getCanvas().clientWidth, 1);
+    const altitude = map.transform.getCameraAltitude();
+    const time = reduceMotion ? 0 : ((now - this.epoch) / 1000) % 3600;
+    const dark = this.dark;
+    const rainColor = dark ? [0.75, 0.8, 0.88] : [0.16, 0.22, 0.3];
+    const shadowAlpha = dark ? 0 : this.cloud * 0.28;
+
+    const use = ({ program, uniforms }) => {
+      gl.useProgram(program);
+      gl.uniformMatrix4fv(uniforms.u_matrix, false, matrix);
+      gl.uniform4f(uniforms.u_volume, local[0], local[1], 1100 * metersPerPoint, 340 * metersPerPoint);
+      gl.uniform4f(uniforms.u_options, time, 0.75, pixelRatio / metersPerPoint, 0);
+      gl.uniform4f(uniforms.u_viewport, gl.drawingBufferWidth, gl.drawingBufferHeight, 1.4 * pixelRatio, 30 * metersPerPoint);
+      gl.uniform4f(uniforms.u_color, ...rainColor, (dark ? 0.5 : 0.42) * (0.6 + 0.4 * this.rain));
+      gl.uniform4f(uniforms.u_wind, -toward[0] * lean, -toward[1] * lean, 0, 0);
+      gl.uniform4f(uniforms.u_cloud, this.cloud * (dark ? 0.55 : 0.8), 0, altitude, dark ? 1 : 0);
+      gl.uniform4f(uniforms.u_shadow, -DAY_SUN[0] / DAY_SUN[1], -DAY_SUN[2] / DAY_SUN[1], shadowAlpha, 0);
+      gl.uniform4f(uniforms.u_origin, origin[0], origin[1], 0, 0);
+      gl.uniform1i(uniforms.u_noise, 0);
+    };
+    const draw = (count) => { if (count > 0) gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count); };
+
+    gl.bindVertexArray(this.empty);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.noise);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    const clouds = Math.round(MAXIMUM_CLOUDS * Math.min(this.cloud, 1));
+    if (shadowAlpha > 0.01) {
+      gl.disable(gl.DEPTH_TEST);
+      use(this.shadow);
+      draw(clouds);
+    }
+    if (this.rain > 0.01) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      use(this.splash);
+      draw(Math.round(MAXIMUM_SPLASHES * this.rain));
+      use(this.drop);
+      draw(Math.round(MAXIMUM_DROPS * this.rain));
+    }
+    if (altitude > LOWEST_CLOUD * 1.3) {
+      gl.disable(gl.DEPTH_TEST);
+      use(this.cloudProgram);
+      draw(clouds);
+    }
+    gl.bindVertexArray(null);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+  }
+}
+
+function addWeather() {
+  state.weatherLayer = new WeatherLayer();
+  state.weatherLayer.dark = state.dark;
+  if (state.sky) state.weatherLayer.sky = state.sky;
+  state.map.addLayer(state.weatherLayer);
 }
 
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, here: null, dark: false, sky: null, crowns: null, scenery: null, sceneryKey: null, sceneryDirty: true, births: new Map() };
+const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, here: null, dark: false, sky: null, crowns: null, scenery: null, weatherLayer: null, sceneryKey: null, sceneryDirty: true, births: new Map() };
 
 function chooseArea(except) {
   const requested = state.areas.find((area) => area.key === params.get("area") || area.stops.some((stop) => stop.code === params.get("stop")));
@@ -2286,6 +2376,7 @@ function applyTheme(dark) {
   state.map.setStyle(themedStyle(state.style, dark));
   state.map.once("style.load", () => {
     addScenery();
+    addWeather();
     state.weather.ready = true;
     state.weather.set(state.sky, dark);
   });
@@ -2340,6 +2431,7 @@ async function start() {
   });
   map.once("style.load", () => {
     addScenery();
+    addWeather();
     state.weather.ready = true;
     setSky(SKIES[params.get("weather")] ?? SKIES.clear);
     updateSky(state.stop);
