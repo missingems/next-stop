@@ -2050,14 +2050,9 @@ function buildPanel(stop) {
   plates.replaceChildren();
   const now = performance.now() / 1000;
   state.rows = stop.services.map((entry) => {
-    const plate = document.createElement("b");
-    plate.className = "plate-time";
-    plate.textContent = entry.service;
-    plate.style.background = OPERATORS[entry.operator] ?? OPERATORS.GAS;
-    plates.append(plate);
     return {
       entry,
-      plate,
+      plate: timelinePlate(entry),
       bus: state.buses.find((bus) => bus.route.service === entry.service),
       headway: 420 + Math.random() * 480,
       offset: now + Math.random() * 1100,
@@ -2065,6 +2060,25 @@ function buildPanel(stop) {
     };
   });
   updatePanel();
+}
+
+function timelinePlate(entry) {
+  const plate = document.createElement("b");
+  plate.className = "plate-time";
+  plate.textContent = entry.service;
+  plate.style.background = OPERATORS[entry.operator] ?? OPERATORS.GAS;
+  document.getElementById("plates").append(plate);
+  return plate;
+}
+
+// A bus that has arrived leaves the timeline at Now, and the service's next bus joins as a new plate.
+function retirePlate(row) {
+  const leaving = row.plate;
+  leaving.classList.remove("shown");
+  setTimeout(() => leaving.remove(), 500);
+  row.plate = timelinePlate(row.entry);
+  row.width = 0;
+  row.lane = -1;
 }
 
 function firstArrival(row, now) {
@@ -2086,7 +2100,12 @@ function updatePanel() {
   const track = document.getElementById("plates").clientWidth;
   const lanes = [];
   const placed = state.rows
-    .map((row) => ({ row, minutes: firstArrival(row, now) / 60 }))
+    .map((row) => {
+      const minutes = firstArrival(row, now) / 60;
+      if (row.minutes !== undefined && minutes > row.minutes + 1 && row.lane !== -1) retirePlate(row);
+      row.minutes = minutes;
+      return { row, minutes };
+    })
     .filter((item) => item.minutes <= TIMELINE_MINUTES)
     .sort((a, b) => a.minutes - b.minutes);
   const shown = new Set();
