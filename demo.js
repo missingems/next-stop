@@ -62,15 +62,15 @@ function decodePolyline(encoded) {
 
 // Map style: the app's day and night recolouring of OpenFreeMap Liberty.
 
-const DAY_FILLS = { park: "#cde8bf", landcover_wood: "#c0e0ae", landcover_grass: "#d3eac6", water: "#a5cdf5", landuse_residential: "#efece6", building: "#e4e1db" };
+const DAY_FILLS = { park: "#d3dfcb", landcover_wood: "#cadbbf", landcover_grass: "#d6e0cf", water: "#a5cdf5", landuse_residential: "#e6e5e2", building: "#d9d8d5" };
 const NIGHT_FILLS = { park: "#1a2a1f", landcover_wood: "#1d3524", landcover_grass: "#1c3123", water: "#0e2135", landuse_residential: "#181d24", building: "#22262d" };
 const BUILDING_POI_CLASSES = ["rail", "railway", "lodging", "hospital", "college", "school", "museum", "stadium", "town_hall", "place_of_worship", "library", "theatre", "cinema"];
 const BUILDING_POI_SUBCLASSES = ["mall", "department_store"];
 const HIDDEN_LAYERS = ["highway-shield-non-us", "highway-shield-us-interstate", "road_shield_us", "airport"];
 const ROAD_METERS = [["motorway_link", 8], ["_link", 8], ["motorway", 14], ["trunk_primary", 16], ["secondary_tertiary", 12], ["minor", 8], ["street", 8], ["service_track", 5]];
 const CURB_METERS = 2.5;
-const ASPHALT = "#d6d4d0";
-const CURB = "#bbb6ae";
+const ASPHALT = "#cfcecb";
+const CURB = "#b9b8b5";
 const METRIC_ZOOM = 16;
 const MAXIMUM_ZOOM = 22;
 
@@ -129,7 +129,7 @@ function themedStyle(source, dark) {
 
     if (dark) applyNight(layer, sourceLayer); else applyDay(layer, sourceLayer);
   }
-  if (dark) style.light = { anchor: "viewport", color: "#a9b8d6", intensity: 0.3 };
+  style.light = dark ? { anchor: "viewport", color: "#a9b8d6", intensity: 0.3 } : { anchor: "map", position: [1.4, 200, 35], color: "#ffffff", intensity: 0.55 };
   return style;
 }
 
@@ -137,15 +137,16 @@ function applyDay(layer, sourceLayer) {
   const paint = layer.paint;
   switch (layer.type) {
     case "background":
-      paint["background-color"] = "#f3f1ec";
+      paint["background-color"] = "#e8e7e4";
       break;
     case "fill":
       if (layer.id === "road_area_pattern") break;
-      paint["fill-color"] = DAY_FILLS[layer.id] ?? "#f0eee9";
+      paint["fill-color"] = DAY_FILLS[layer.id] ?? "#e8e7e4";
       paint["fill-outline-color"] = paint["fill-color"];
       break;
     case "fill-extrusion":
-      paint["fill-extrusion-color"] = "#e7e4df";
+      paint["fill-extrusion-color"] = "#dddcd9";
+      paint["fill-extrusion-vertical-gradient"] = true;
       break;
     case "line":
       if (sourceLayer === "transportation") {
@@ -749,10 +750,83 @@ class Bus {
   }
 }
 
+// Trees: the app's canopy trees, planted along the streets around the stop.
+
+const TREE_ROADS = { trunk: 9, primary: 9, secondary: 7, tertiary: 7, minor: 5 };
+const TREE_SPACING = 15;
+const TREE_RADIUS = 650;
+const TREE_GREENS = { day: ["#6c9852", "#77a35c", "#62904b"], night: ["#1f3a26", "#24422b", "#1b3322"] };
+
+function polygon(cx, cy, radius, sides, turn) {
+  const ring = [];
+  for (let i = 0; i <= sides; i++) {
+    const angle = turn + (i % sides) / sides * Math.PI * 2;
+    ring.push(toLngLat([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]));
+  }
+  return [ring];
+}
+
+function plantTrees(map, centre, planted) {
+  const [ox, oy] = toLocal(centre);
+  const roads = map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" });
+  for (const road of roads) {
+    const half = TREE_ROADS[road.properties.class];
+    if (!half || road.properties.brunnel === "tunnel") continue;
+    const lines = road.geometry.type === "LineString" ? [road.geometry.coordinates] : road.geometry.type === "MultiLineString" ? road.geometry.coordinates : [];
+    for (const line of lines) {
+      const points = line.map(toLocal);
+      for (let i = 1; i < points.length; i++) {
+        const [ax, ay] = points[i - 1], [bx, by] = points[i];
+        const length = Math.hypot(bx - ax, by - ay);
+        if (length < 1) continue;
+        const [nx, ny] = [-(by - ay) / length, (bx - ax) / length];
+        for (let d = TREE_SPACING / 2; d < length - 4; d += TREE_SPACING) {
+          const t = d / length;
+          for (const side of [1, -1]) {
+            const x = ax + (bx - ax) * t + nx * side * (half + 4.5);
+            const y = ay + (by - ay) * t + ny * side * (half + 4.5);
+            if (Math.hypot(x - ox, y - oy) > TREE_RADIUS) continue;
+            const key = `${Math.round(x / 11)},${Math.round(y / 11)}`;
+            if (!planted.has(key)) planted.set(key, [x, y]);
+          }
+        }
+      }
+    }
+  }
+}
+
+function treeFeatures(planted, dark) {
+  const features = [];
+  const greens = dark ? TREE_GREENS.night : TREE_GREENS.day;
+  let seed = 0;
+  for (const [x, y] of planted.values()) {
+    const r = 3.4 + hash(x * 0.37 + y * 0.11) * 1.4;
+    const tall = 10 + hash(x * 0.13 - y * 0.29) * 3.5;
+    const color = greens[seed++ % greens.length];
+    const turn = hash(x + y) * Math.PI;
+    features.push({ type: "Feature", properties: { kind: "shadow" }, geometry: { type: "Polygon", coordinates: polygon(x + r * 0.7, y - r * 0.5, r * 1.05, 10, turn) } });
+    features.push({ type: "Feature", properties: { kind: "trunk", base: 0, top: tall * 0.45, color: dark ? "#3a342c" : "#7d6c58" }, geometry: { type: "Polygon", coordinates: polygon(x, y, 0.3, 4, turn) } });
+    features.push({ type: "Feature", properties: { kind: "canopy", base: tall * 0.4, top: tall * 0.8, color }, geometry: { type: "Polygon", coordinates: polygon(x, y, r, 8, turn) } });
+    features.push({ type: "Feature", properties: { kind: "canopy", base: tall * 0.8, top: tall, color }, geometry: { type: "Polygon", coordinates: polygon(x + r * 0.15, y + r * 0.1, r * 0.68, 7, turn + 0.4) } });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+function showTrees(map, planted, dark) {
+  const data = treeFeatures(planted, dark);
+  const source = map.getSource("trees");
+  if (source) return source.setData(data);
+  map.addSource("trees", { type: "geojson", data });
+  const extrusion = { "fill-extrusion-color": ["get", "color"], "fill-extrusion-base": ["get", "base"], "fill-extrusion-height": ["get", "top"], "fill-extrusion-vertical-gradient": true };
+  map.addLayer({ id: "tree-shadows", type: "fill", source: "trees", filter: ["==", ["get", "kind"], "shadow"], paint: { "fill-color": "#000", "fill-opacity": dark ? 0.18 : 0.1, "fill-antialias": false } }, "building-3d");
+  map.addLayer({ id: "tree-trunks", type: "fill-extrusion", source: "trees", minzoom: 15, filter: ["==", ["get", "kind"], "trunk"], paint: extrusion });
+  map.addLayer({ id: "tree-canopy", type: "fill-extrusion", source: "trees", minzoom: 14, filter: ["==", ["get", "kind"], "canopy"], paint: extrusion });
+}
+
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null };
+const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null, trees: new Map(), treesDirty: true };
 
 function chooseArea(except) {
   const requested = state.areas.find((area) => area.key === params.get("area") || area.stops.some((stop) => stop.code === params.get("stop")));
@@ -793,11 +867,11 @@ function youElement() {
   return element;
 }
 
-function sheetInsets() {
-  const sheet = document.querySelector(".sheet").getBoundingClientRect();
+function trayInsets() {
+  const tray = document.querySelector(".tray").getBoundingClientRect();
   return innerWidth >= 768
-    ? { top: 60, bottom: 60, left: sheet.right + 40, right: 90 }
-    : { top: 70, bottom: innerHeight - sheet.top + 30, left: 30, right: 70 };
+    ? { top: 60, bottom: 60, left: tray.right + 20, right: 60 }
+    : { top: 70, bottom: innerHeight - tray.top + 30, left: 30, right: 30 };
 }
 
 function showStop(area, stop, fly) {
@@ -817,9 +891,11 @@ function showStop(area, stop, fly) {
     return new Bus(state.map, route, lane % 3, (index + 0.2 + Math.random() * 0.6) / simulated.length);
   });
   state.buses.forEach((bus) => bus.add());
-  buildPanel(area, stop);
+  buildPanel(stop);
 
+  state.treesDirty = true;
   if (!sameArea || !state.pins.length) {
+    state.trees = new Map();
     state.pins.forEach((pin) => pin.marker.remove());
     state.pins = area.stops.map((other) => {
       const marker = new maplibregl.Marker({ element: pinElement(other), anchor: "center" }).setLngLat(other.lngLat).addTo(state.map);
@@ -833,68 +909,48 @@ function showStop(area, stop, fly) {
 
   const camera = {
     center: stop.lngLat,
-    zoom: innerWidth < 768 ? 16.6 : 17,
-    pitch: 20,
+    zoom: innerWidth < 768 ? 17.5 : 18,
+    pitch: innerWidth < 768 ? 50 : 55,
     bearing: sameArea ? state.map.getBearing() : Math.round(Math.random() * 40 - 20),
-    padding: sheetInsets(),
+    padding: trayInsets(),
   };
   if (fly && !reduceMotion) state.map.flyTo({ ...camera, duration: sameArea ? 1200 : 2600, essential: false });
   else state.map.jumpTo(camera);
   updateBusSize();
 }
 
-// The sheet: the app's Nearby sheet, with stop chips and each service's next three buses.
+// The tray: the app's sheet at its smallest size, the stop and a timeline of the next buses.
 
-const SLOT_HTML = `<div class="slot"><span class="box"></span><span class="load"><i></i><i></i></span></div>`;
-const ARROW_SVG = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const TIMELINE_MINUTES = 20;
+const LANE_GAP = 6;
+const MAX_LANES = 2;
 
-function buildPanel(area, stop) {
-  const chips = document.getElementById("chips");
-  chips.replaceChildren(...[stop, ...area.stops.filter((other) => other !== stop)].map((other) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = other === stop ? "chip-stop selected" : "chip-stop";
-    chip.innerHTML = `<b></b><span><code></code> <i></i></span>`;
-    chip.querySelector("b").textContent = other.name;
-    chip.querySelector("code").textContent = other.code;
-    chip.querySelector("i").textContent = other.road;
-    chip.addEventListener("click", () => {
-      if (other !== state.stop) showStop(state.area, other, true);
-    });
-    return chip;
-  }));
-  chips.scrollLeft = 0;
+const timelineX = (minutes) => Math.sqrt(clamp(minutes, 0, TIMELINE_MINUTES) / TIMELINE_MINUTES);
 
-  document.getElementById("service-count").textContent = `${stop.services.length} Services`;
-  const list = document.getElementById("rows");
-  list.replaceChildren();
+function buildPanel(stop) {
+  const card = document.getElementById("stop");
+  card.querySelector("b").textContent = stop.name;
+  card.querySelector("code").textContent = stop.code;
+  card.querySelector("i").textContent = stop.road;
+
+  const plates = document.getElementById("plates");
+  plates.replaceChildren();
   const now = performance.now() / 1000;
   state.rows = stop.services.map((entry) => {
-    const item = document.createElement("li");
-    item.className = "row";
-    item.innerHTML = `<div class="service"><b class="number"></b><span>${ARROW_SVG}<em></em></span></div><div class="times">${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}</div>`;
-    const number = item.querySelector(".number");
-    number.textContent = entry.service;
-    number.style.background = OPERATORS[entry.operator] ?? OPERATORS.GAS;
-    item.querySelector("em").textContent = entry.destination;
-    list.append(item);
-    const decks = Math.random() < 0.45 ? 2 : 1;
-    const slots = [...item.querySelectorAll(".slot")].map((slot) => {
-      const load = randomLoad();
-      slot.querySelector(".load").style.color = load.color;
-      slot.querySelector(".load").dataset.decks = String(decks);
-      return slot.querySelector(".box");
-    });
+    const plate = document.createElement("b");
+    plate.className = "plate-time";
+    plate.textContent = entry.service;
+    plate.style.background = OPERATORS[entry.operator] ?? OPERATORS.GAS;
+    plates.append(plate);
     return {
       entry,
+      plate,
       bus: state.buses.find((bus) => bus.route.service === entry.service),
       headway: 420 + Math.random() * 480,
       offset: now + Math.random() * 1100,
-      slots,
-      texts: [],
+      lane: -1,
     };
   });
-  document.querySelector(".scroll").scrollTop = 0;
   updatePanel();
 }
 
@@ -902,7 +958,10 @@ function firstArrival(row, now) {
   const bus = row.bus;
   if (bus) {
     if (bus.state === "dwelling") return 0;
-    if (bus.state !== "gone" && !bus.served) return Math.max(0, (bus.stopPoint - bus.distance) / AVERAGE_SPEED);
+    if (bus.state !== "gone" && !bus.served) {
+      const remaining = bus.stopPoint - bus.distance;
+      return remaining < 140 ? 0 : Math.max(60, remaining / AVERAGE_SPEED);
+    }
     const wait = bus.state === "gone" ? Math.max(0, bus.wait) : (bus.route.length - bus.distance) / Math.max(bus.cruise, 1) + 5;
     return wait + (bus.stopPoint - bus.entry) / AVERAGE_SPEED;
   }
@@ -911,33 +970,35 @@ function firstArrival(row, now) {
 
 function updatePanel() {
   const now = performance.now() / 1000;
+  const track = document.getElementById("plates").clientWidth;
+  const lanes = [];
+  const placed = state.rows
+    .map((row) => ({ row, minutes: firstArrival(row, now) / 60 }))
+    .filter((item) => item.minutes <= TIMELINE_MINUTES)
+    .sort((a, b) => a.minutes - b.minutes);
+  const shown = new Set();
+  for (const { row, minutes } of placed) {
+    row.width ||= row.plate.offsetWidth || 44;
+    const half = row.width / 2;
+    const centre = clamp(timelineX(minutes) * track, half + 16, track - half);
+    const lane = lanes.findIndex((right) => right + LANE_GAP <= centre - half);
+    const index = lane === -1 ? lanes.length : lane;
+    if (index >= MAX_LANES) continue;
+    lanes[index] = centre + half;
+    shown.add(row);
+    row.plate.style.transform = `translate(${(centre - half).toFixed(1)}px, ${index * 100}%) translateY(${index * 4}px)`;
+    if (row.lane === -1) row.plate.getBoundingClientRect();
+    row.lane = index;
+  }
   for (const row of state.rows) {
-    const first = firstArrival(row, now);
-    row.slots.forEach((slot, index) => {
-      const seconds = first + row.headway * index;
-      const text = seconds < 60 ? "Arr" : String(Math.round(seconds / 60));
-      if (row.texts[index] !== text) {
-        row.texts[index] = text;
-        slot.textContent = text;
-        slot.classList.toggle("arriving", text === "Arr");
-      }
-    });
+    row.plate.classList.toggle("shown", shown.has(row));
+    if (!shown.has(row)) row.lane = -1;
   }
 }
 
-let toastTimer;
-function toast(message) {
-  const element = document.getElementById("toast");
-  element.textContent = message;
-  element.classList.add("shown");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => element.classList.remove("shown"), 2600);
-}
-
-function setSky(sky, announce) {
+function setSky(sky) {
   state.sky = sky;
   state.weather.set(sky, state.dark);
-  if (announce) toast(sky.title);
 }
 
 function updateBusSize() {
@@ -978,6 +1039,7 @@ function applyTheme(dark) {
   state.weather.ready = false;
   state.map.setStyle(themedStyle(state.style, dark));
   state.map.once("style.load", () => {
+    showTrees(state.map, state.trees, dark);
     state.weather.ready = true;
     state.weather.set(state.sky, dark);
   });
@@ -1003,7 +1065,7 @@ async function start() {
     style: themedStyle(style, state.dark),
     center: stop.lngLat,
     zoom: 16,
-    pitch: 20,
+    pitch: 55,
     maxBounds: [[SINGAPORE[0][0] - 0.1, SINGAPORE[0][1] - 0.1], [SINGAPORE[1][0] + 0.1, SINGAPORE[1][1] + 0.1]],
     maxZoom: 19.5,
     minZoom: 11,
@@ -1017,29 +1079,31 @@ async function start() {
 
   showStop(area, stop, false);
   map.on("zoom", updateBusSize);
+  map.on("sourcedata", (event) => {
+    if (event.sourceId === "openmaptiles" && event.isSourceLoaded) state.treesDirty = true;
+  });
+  map.on("idle", () => {
+    if (!state.treesDirty || !map.getLayer("building-3d")) return;
+    state.treesDirty = false;
+    const before = state.trees.size;
+    plantTrees(map, state.stop.lngLat, state.trees);
+    if (state.trees.size !== before || !map.getSource("trees")) showTrees(map, state.trees, state.dark);
+  });
   map.once("style.load", () => {
     state.weather.ready = true;
     setSky(chooseSky());
   });
 
-  document.getElementById("search").addEventListener("click", () => {
-    const next = chooseArea(state.area);
-    showStop(next, chooseStop(next, false), true);
-    setSky(chooseSky(state.sky), true);
-  });
-  document.getElementById("weather-button").addEventListener("click", () => {
-    const keys = ["clear", ...RANDOM_SKIES];
-    const index = keys.findIndex((key) => SKIES[key] === state.sky);
-    setSky(SKIES[keys[(index + 1) % keys.length]], true);
-  });
-  document.getElementById("drive").addEventListener("click", () => toast("Drive along with your bus in the app"));
-  document.getElementById("locate").addEventListener("click", () => {
-    state.map.easeTo({ center: state.stop.lngLat, zoom: innerWidth < 768 ? 16.6 : 17, pitch: 20, padding: sheetInsets(), duration: reduceMotion ? 0 : 900 });
+  document.getElementById("shuffle").addEventListener("click", () => {
+    const stops = state.areas.flatMap((area) => area.stops.map((stop) => [area, stop])).filter(([, stop]) => stop !== state.stop);
+    const [next, stop] = pick(stops);
+    showStop(next, stop, true);
+    setSky(chooseSky(state.sky));
   });
   if (!theme) darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
   addEventListener("resize", () => {
     state.weather.resize();
-    map.setPadding(sheetInsets());
+    map.setPadding(trayInsets());
   });
 
   let last = performance.now(), frame = 0, running = true;
