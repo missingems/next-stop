@@ -750,83 +750,515 @@ class Bus {
   }
 }
 
-// Trees: the app's canopy trees, planted along the streets around the stop.
+// Scenery: the app's 3D trees (MapScenery, MapSceneryMesh and SceneryShaders.metal), drawn in
+// the map's depth buffer so buildings and trees hide each other.
 
-const TREE_ROADS = { trunk: 9, primary: 9, secondary: 7, tertiary: 7, minor: 5 };
-const TREE_SPACING = 15;
-const TREE_RADIUS = 650;
-const TREE_GREENS = { day: ["#6c9852", "#77a35c", "#62904b"], night: ["#1f3a26", "#24422b", "#1b3322"] };
+const SCENERY_RADIUS = 900;
+const SCENERY_FADE = 200;
+const MAXIMUM_TREES = 12000;
+const STOP_CLEARANCE = 6;
+const ROAD_HALF_WIDTHS = { motorway: 7, trunk: 8, primary: 8, secondary: 6, tertiary: 6, minor: 4, service: 2.5 };
+const LINED_ROADS = new Set(["trunk", "primary", "secondary", "tertiary", "minor"]);
+const unit3 = (v) => { const l = Math.hypot(...v); return v.map((x) => x / l); };
+const DAY_SUN = unit3([Math.cos(1.42) * 0.9, Math.max(Math.sin(1.42), 0.35), -0.35]);
+const NIGHT_SUN = unit3([0.45, 0.8, -0.4]);
 
-function polygon(cx, cy, radius, sides, turn) {
-  const ring = [];
-  for (let i = 0; i <= sides; i++) {
-    const angle = turn + (i % sides) / sides * Math.PI * 2;
-    ring.push(toLngLat([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]));
-  }
-  return [ring];
+function sceneryHash(x, y) {
+  let h = Math.imul(Math.round(x / 0.5), 73856093) ^ Math.imul(Math.round(y / 0.5), 19349663);
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  return (h ^ (h >>> 16)) >>> 0;
 }
 
-function plantTrees(map, centre, planted) {
-  const [ox, oy] = toLocal(centre);
-  const roads = map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" });
-  for (const road of roads) {
-    const half = TREE_ROADS[road.properties.class];
-    if (!half || road.properties.brunnel === "tunnel") continue;
-    const lines = road.geometry.type === "LineString" ? [road.geometry.coordinates] : road.geometry.type === "MultiLineString" ? road.geometry.coordinates : [];
-    for (const line of lines) {
-      const points = line.map(toLocal);
-      for (let i = 1; i < points.length; i++) {
-        const [ax, ay] = points[i - 1], [bx, by] = points[i];
-        const length = Math.hypot(bx - ax, by - ay);
-        if (length < 1) continue;
-        const [nx, ny] = [-(by - ay) / length, (bx - ax) / length];
-        for (let d = TREE_SPACING / 2; d < length - 4; d += TREE_SPACING) {
-          const t = d / length;
-          for (const side of [1, -1]) {
-            const x = ax + (bx - ax) * t + nx * side * (half + 4.5);
-            const y = ay + (by - ay) * t + ny * side * (half + 4.5);
-            if (Math.hypot(x - ox, y - oy) > TREE_RADIUS) continue;
-            const key = `${Math.round(x / 11)},${Math.round(y / 11)}`;
-            if (!planted.has(key)) planted.set(key, [x, y]);
-          }
-        }
+class Grid {
+  constructor(cell) { this.cell = cell; this.buckets = new Map(); }
+  key(x, y) { return `${Math.floor(x / this.cell)},${Math.floor(y / this.cell)}`; }
+  insert(item, lowX, lowY, highX, highY) {
+    for (let x = Math.floor(lowX / this.cell); x <= Math.floor(highX / this.cell); x++) {
+      for (let y = Math.floor(lowY / this.cell); y <= Math.floor(highY / this.cell); y++) {
+        const key = `${x},${y}`;
+        if (!this.buckets.has(key)) this.buckets.set(key, []);
+        this.buckets.get(key).push(item);
       }
     }
   }
-}
-
-function treeFeatures(planted, dark) {
-  const features = [];
-  const greens = dark ? TREE_GREENS.night : TREE_GREENS.day;
-  let seed = 0;
-  for (const [x, y] of planted.values()) {
-    const r = 3.4 + hash(x * 0.37 + y * 0.11) * 1.4;
-    const tall = 10 + hash(x * 0.13 - y * 0.29) * 3.5;
-    const color = greens[seed++ % greens.length];
-    const turn = hash(x + y) * Math.PI;
-    features.push({ type: "Feature", properties: { kind: "shadow" }, geometry: { type: "Polygon", coordinates: polygon(x + r * 0.7, y - r * 0.5, r * 1.05, 10, turn) } });
-    features.push({ type: "Feature", properties: { kind: "trunk", base: 0, top: tall * 0.45, color: dark ? "#3a342c" : "#7d6c58" }, geometry: { type: "Polygon", coordinates: polygon(x, y, 0.3, 4, turn) } });
-    features.push({ type: "Feature", properties: { kind: "canopy", base: tall * 0.4, top: tall * 0.8, color }, geometry: { type: "Polygon", coordinates: polygon(x, y, r, 8, turn) } });
-    features.push({ type: "Feature", properties: { kind: "canopy", base: tall * 0.8, top: tall, color }, geometry: { type: "Polygon", coordinates: polygon(x + r * 0.15, y + r * 0.1, r * 0.68, 7, turn + 0.4) } });
+  nearby(x, y) {
+    const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell), found = [];
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      const bucket = this.buckets.get(`${cx + i},${cy + j}`);
+      if (bucket) found.push(...bucket);
+    }
+    return found;
   }
-  return { type: "FeatureCollection", features };
 }
 
-function showTrees(map, planted, dark) {
-  const data = treeFeatures(planted, dark);
-  const source = map.getSource("trees");
-  if (source) return source.setData(data);
-  map.addSource("trees", { type: "geojson", data });
-  const extrusion = { "fill-extrusion-color": ["get", "color"], "fill-extrusion-base": ["get", "base"], "fill-extrusion-height": ["get", "top"], "fill-extrusion-vertical-gradient": true };
-  map.addLayer({ id: "tree-shadows", type: "fill", source: "trees", filter: ["==", ["get", "kind"], "shadow"], paint: { "fill-color": "#000", "fill-opacity": dark ? 0.18 : 0.1, "fill-antialias": false } }, "building-3d");
-  map.addLayer({ id: "tree-trunks", type: "fill-extrusion", source: "trees", minzoom: 15, filter: ["==", ["get", "kind"], "trunk"], paint: extrusion });
-  map.addLayer({ id: "tree-canopy", type: "fill-extrusion", source: "trees", minzoom: 14, filter: ["==", ["get", "kind"], "canopy"], paint: extrusion });
+function insideRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function segmentDistance(x, y, segment) {
+  const [ax, ay, bx, by] = segment;
+  const dx = bx - ax, dy = by - ay, length = dx * dx + dy * dy;
+  const t = length ? clamp(((x - ax) * dx + (y - ay) * dy) / length, 0, 1) : 0;
+  return Math.hypot(x - ax - dx * t, y - ay - dy * t);
+}
+
+// The app's placement: real crowns from the canopy-height index, then street trees every 11 m
+// along lined roads, kept clear of carriageways, buildings and other trees.
+function generateTrees(frame, roads, buildings, crowns, stops) {
+  const coverage = new Set();
+  const cover = (lowX, lowY, highX, highY) => {
+    for (let x = Math.floor(Math.max(lowX, -SCENERY_RADIUS - 60) / 120); x <= Math.floor(Math.min(highX, SCENERY_RADIUS + 60) / 120); x++) {
+      for (let y = Math.floor(Math.max(lowY, -SCENERY_RADIUS - 60) / 120); y <= Math.floor(Math.min(highY, SCENERY_RADIUS + 60) / 120); y++) coverage.add(`${x},${y}`);
+    }
+  };
+  const covered = (x, y) => coverage.has(`${Math.floor(x / 120)},${Math.floor(y / 120)}`);
+  const reach = SCENERY_RADIUS + 60;
+
+  const segments = new Grid(30), lined = [];
+  for (const road of roads) {
+    const points = road.points;
+    for (let i = 1; i < points.length; i++) {
+      const [ax, ay] = points[i - 1], [bx, by] = points[i];
+      if (Math.hypot(ax, ay) > reach && Math.hypot(bx, by) > reach) continue;
+      const segment = [ax, ay, bx, by, road.halfWidth];
+      segments.insert(segment, Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by));
+      cover(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by));
+      if (road.lined) lined.push(segment);
+    }
+  }
+  const footprints = new Grid(30);
+  for (const ring of buildings) {
+    if (!ring.some(([x, y]) => Math.hypot(x, y) < reach)) continue;
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    const low = [Math.min(...xs), Math.min(...ys)], high = [Math.max(...xs), Math.max(...ys)];
+    if (Math.hypot(high[0] - low[0], high[1] - low[1]) >= 400) continue;
+    footprints.insert(ring, low[0], low[1], high[0], high[1]);
+    cover(low[0], low[1], high[0], high[1]);
+  }
+  const insideBuilding = (x, y) => footprints.nearby(x, y).some((ring) => insideRing(x, y, ring));
+  const roadClearance = (x, y) => segments.nearby(x, y).reduce((best, s) => Math.min(best, segmentDistance(x, y, s) - s[4]), Infinity);
+  const hash = (x, y) => sceneryHash(x + frame.absolute[0], y + frame.absolute[1]);
+  const key = (x, y) => [Math.floor((x + frame.absolute[0]) / 7), Math.floor((y + frame.absolute[1]) / 7)];
+
+  const real = [], realGrid = new Grid(10);
+  for (const [x, y, height, radius] of crowns) {
+    if (Math.hypot(x, y) > SCENERY_RADIUS || !covered(x, y) || roadClearance(x, y) <= 0.5 || insideBuilding(x, y)) continue;
+    const scale = clamp(height / 4 / 8, 0.45, 2.4);
+    real.push({ x, y, hash: hash(x, y), scale, width: clamp(radius / 4 / 3.1 / scale, 0.7, 1.8) });
+    realGrid.insert([x, y], x, y, x, y);
+  }
+  const nearReal = (x, y, distance) => realGrid.nearby(x, y).some(([rx, ry]) => Math.hypot(rx - x, ry - y) < distance);
+
+  const candidates = new Map();
+  const offer = (x, y, scale) => {
+    if (Math.hypot(x, y) >= SCENERY_RADIUS) return;
+    const h = hash(x, y), k = key(x, y).join();
+    const existing = candidates.get(k);
+    if (existing && existing.hash <= h) return;
+    candidates.set(k, { x, y, hash: h, scale, width: 1 });
+  };
+  for (const [ax, ay, bx, by, halfWidth] of lined) {
+    const length = Math.hypot(bx - ax, by - ay);
+    if (length <= 1) continue;
+    const ux = (bx - ax) / length, uy = (by - ay) / length;
+    for (let distance = 5.5; distance < length; distance += 11) {
+      for (const side of [-1, 1]) {
+        const px = ax + ux * distance - uy * side * (halfWidth + 2.2);
+        const py = ay + uy * distance + ux * side * (halfWidth + 2.2);
+        const jitter = (hash(px, py) % 1000) / 1000;
+        const x = px + ux * (jitter - 0.5) * 3, y = py + uy * (jitter - 0.5) * 3;
+        if (roadClearance(x, y) > 1.2 && !insideBuilding(x, y) && !nearReal(x, y, 8)) offer(x, y, 0.85 + jitter * 0.4);
+      }
+    }
+  }
+
+  let trees = [...candidates.values()].filter((tree) => {
+    const [kx, ky] = key(tree.x, tree.y);
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      const other = (i || j) && candidates.get(`${kx + i},${ky + j}`);
+      if (other && other.hash < tree.hash && Math.hypot(other.x - tree.x, other.y - tree.y) < 4.5) return false;
+    }
+    return true;
+  }).concat(real).filter((tree) => !stops.some(([sx, sy]) => Math.hypot(sx - tree.x, sy - tree.y) < STOP_CLEARANCE));
+  if (trees.length > MAXIMUM_TREES) trees = trees.sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y)).slice(0, MAXIMUM_TREES);
+  return trees;
+}
+
+class MeshBuilder {
+  constructor() { this.vertices = []; this.indices = []; }
+
+  quad(corners, normal, material) {
+    const base = this.vertices.length / 8;
+    for (const c of corners) this.vertices.push(c[0], c[1], c[2], material, normal[0], normal[1], normal[2], 0);
+    this.indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+  }
+
+  prism(height, bottom, top, sides, material) {
+    for (let side = 0; side < sides; side++) {
+      const a = side / sides * Math.PI * 2, b = (side + 1) / sides * Math.PI * 2, m = (a + b) / 2;
+      this.quad([
+        [Math.cos(a) * bottom, 0, Math.sin(a) * bottom], [Math.cos(a) * top, height, Math.sin(a) * top],
+        [Math.cos(b) * bottom, 0, Math.sin(b) * bottom], [Math.cos(b) * top, height, Math.sin(b) * top],
+      ], unit3([Math.cos(m), (bottom - top) / height, Math.sin(m)]), material);
+    }
+  }
+
+  blob(center, radius, subdivisions, material) {
+    const t = (1 + Math.sqrt(5)) / 2;
+    const points = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(unit3);
+    let faces = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+      [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+    for (let level = 0; level < subdivisions; level++) {
+      const midpoints = new Map();
+      const midpoint = (a, b) => {
+        const k = `${Math.min(a, b)},${Math.max(a, b)}`;
+        if (!midpoints.has(k)) {
+          points.push(unit3(points[a].map((v, i) => v + points[b][i])));
+          midpoints.set(k, points.length - 1);
+        }
+        return midpoints.get(k);
+      };
+      faces = faces.flatMap(([a, b, c]) => {
+        const ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
+        return [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]];
+      });
+    }
+    const base = this.vertices.length / 8;
+    for (const p of points) {
+      const normal = unit3(p.map((v, i) => v / radius[i]));
+      this.vertices.push(center[0] + p[0] * radius[0], center[1] + p[1] * radius[1], center[2] + p[2] * radius[2], material, ...normal, 0);
+    }
+    for (const face of faces) this.indices.push(...face.map((i) => base + i));
+  }
+}
+
+function treeMesh() {
+  const builder = new MeshBuilder();
+  builder.prism(4.2, 0.24, 0.14, 6, 0);
+  builder.blob([0, 5.6, 0], [3.1, 2.1, 3.1], 1, 1);
+  builder.blob([1.2, 6.6, -0.7], [1.9, 1.4, 1.9], 0, 1);
+  builder.blob([-1.3, 6.3, 0.9], [1.7, 1.3, 1.7], 0, 1);
+  return builder;
+}
+
+function treeShadowMesh() {
+  const builder = new MeshBuilder();
+  builder.prism(4.2, 0.24, 0.14, 5, 0);
+  builder.blob([0, 5.9, 0], [3.3, 2.2, 3.3], 1, 1);
+  return builder;
+}
+
+const SCENERY_COMMON = `#version 300 es
+precision highp float;
+layout(location = 0) in vec4 a_position;
+layout(location = 1) in vec4 a_normal;
+layout(location = 2) in vec4 a_placement;
+layout(location = 3) in vec4 a_extra;
+uniform mat4 u_matrix;
+uniform vec4 u_light, u_focus, u_options, u_sky, u_wind;
+vec2 rotate2(vec2 v, float a) { float c = cos(a), s = sin(a); return vec2(v.x * c - v.y * s, v.x * s + v.y * c); }
+float sceneryFade(vec2 p) { return (1.0 - smoothstep(u_focus.w, u_options.x, distance(p, u_focus.xz))) * u_options.z; }
+float sceneryAppear(vec4 placement) {
+  vec2 cell = floor(placement.xz * 0.37);
+  float stagger = fract(sin(dot(fract(cell * 0.0137), vec2(12.9898, 78.233))) * 43758.5453);
+  float progress = (u_options.w - placement.y) / 0.9;
+  return smoothstep(0.0, 1.0, clamp(progress * 1.5 - stagger * 0.5, 0.0, 1.0));
+}
+vec3 sceneryPlace() {
+  float seed = a_extra.y;
+  vec3 local = a_position.xyz;
+  if (a_position.w == 1.0) {
+    float wobble = sin(local.x * 1.7 + seed * 40.0) * sin(local.y * 2.3 + seed * 17.0) * sin(local.z * 1.9 + seed * 29.0);
+    local += a_normal.xyz * wobble * 0.45;
+    local.xz *= a_extra.z;
+  }
+  float scale = a_extra.x;
+  vec3 world = vec3(a_placement.x, local.y * scale, a_placement.z);
+  world.xz += rotate2(local.xz, a_placement.w) * scale;
+  float speed = length(u_wind.xy);
+  if (a_position.w == 1.0 && speed > 0.5) {
+    float time = u_options.w;
+    float strength = clamp((speed - 3.0) / 7.0, 0.0, 1.0);
+    float gust = 0.55 + 0.45 * sin(time * 0.6 + seed * 6.0);
+    float sway = (0.5 + 0.5 * sin(time * 2.1 + seed * 31.0 + local.y * 0.3)) * gust;
+    world.xz += u_wind.xy / speed * strength * sway * 1.8 * clamp(local.y / 8.0, 0.0, 1.0) * scale;
+  }
+  return world;
+}
+vec4 project(vec3 world) { return u_matrix * vec4(world.x, world.z, world.y, 1.0); }
+`;
+
+const SCENERY_VERTEX = SCENERY_COMMON + `
+out vec3 v_normal;
+out float v_material, v_seed, v_height, v_visibility;
+void main() {
+  gl_Position = project(sceneryPlace());
+  v_normal = vec3(0.0, a_normal.y, 0.0);
+  v_normal.xz = rotate2(a_normal.xz, a_placement.w);
+  v_material = a_position.w;
+  v_seed = a_extra.y;
+  v_height = a_position.y;
+  v_visibility = sceneryFade(a_placement.xz) * sceneryAppear(a_placement);
+}`;
+
+const SCENERY_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec4 u_light, u_sky;
+in vec3 v_normal;
+in float v_material, v_seed, v_height, v_visibility;
+out vec4 fragColor;
+vec3 encode(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+}
+void main() {
+  float threshold = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (v_visibility < 0.999 && v_visibility <= threshold) discard;
+  float night = u_light.w;
+  vec3 color;
+  if (v_material < 0.5) {
+    color = vec3(0.34, 0.26, 0.20);
+  } else {
+    vec3 low = mix(vec3(0.13, 0.27, 0.11), vec3(0.20, 0.33, 0.12), v_seed);
+    vec3 high = mix(vec3(0.27, 0.45, 0.17), vec3(0.36, 0.50, 0.20), fract(v_seed * 7.0));
+    color = mix(low, high, smoothstep(3.6, 7.8, v_height));
+  }
+  vec3 normal = normalize(v_normal);
+  float sun = clamp(dot(normal, u_light.xyz), 0.0, 1.0);
+  float sky = 0.55 + 0.45 * clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+  float daylight = 1.0 - night * 0.7;
+  vec3 lit = color * (sky * mix(0.62, 0.16, night) + sun * 0.55 * daylight * u_sky.rgb);
+  fragColor = vec4(encode(lit), 1.0);
+}`;
+
+const CAST_VERTEX = SCENERY_COMMON + `
+out float v_opacity;
+void main() {
+  vec3 world = sceneryPlace();
+  vec3 sun = u_light.xyz;
+  vec2 ground = world.xz - sun.xz / max(sun.y, 0.45) * max(world.y, 0.0);
+  gl_Position = project(vec3(ground.x, 0.03, ground.y));
+  v_opacity = 0.26 * (1.0 - u_light.w * 0.85) * (1.0 - u_wind.w * 0.65) * sceneryFade(a_placement.xz) * sceneryAppear(a_placement);
+}`;
+
+const CAST_FRAGMENT = `#version 300 es
+precision highp float;
+in float v_opacity;
+out vec4 fragColor;
+void main() { fragColor = vec4(0.0, 0.0, 0.0, v_opacity); }`;
+
+class SceneryLayer {
+  constructor() {
+    this.id = "scenery";
+    this.type = "custom";
+    this.renderingMode = "3d";
+    this.count = 0;
+    this.anchor = null;
+    this.epoch = performance.now();
+    this.wind = [0, 0];
+    this.overcast = 0;
+    this.dark = false;
+  }
+
+  get now() { return (performance.now() - this.epoch) / 1000; }
+
+  onAdd(map, gl) {
+    this.map = map;
+    const program = (vertex, fragment) => {
+      const result = gl.createProgram();
+      for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        gl.attachShader(result, shader);
+      }
+      gl.linkProgram(result);
+      if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(result));
+      const uniforms = {};
+      for (const name of ["u_matrix", "u_light", "u_focus", "u_options", "u_sky", "u_wind"]) uniforms[name] = gl.getUniformLocation(result, name);
+      return { program: result, uniforms };
+    };
+    this.scenery = program(SCENERY_VERTEX, SCENERY_FRAGMENT);
+    this.cast = program(CAST_VERTEX, CAST_FRAGMENT);
+    this.instanceBuffer = gl.createBuffer();
+    const mesh = (builder) => {
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(builder.vertices), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+      for (const [location, offset] of [[2, 0], [3, 16]]) {
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 32, offset);
+        gl.vertexAttribDivisor(location, 1);
+      }
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(builder.indices), gl.STATIC_DRAW);
+      gl.bindVertexArray(null);
+      return { vao, count: builder.indices.length };
+    };
+    this.tree = mesh(treeMesh());
+    this.shadow = mesh(treeShadowMesh());
+    this.gl = gl;
+    if (this.pending) this.upload(this.pending);
+  }
+
+  setTrees(anchor, trees, births) {
+    this.anchor = anchor;
+    const now = this.now;
+    const data = new Float32Array(trees.length * 8);
+    trees.forEach((tree, i) => {
+      const seed = (tree.hash % 10000) / 10000;
+      const k = `${Math.round(tree.x)},${Math.round(tree.y)}`;
+      if (!births.has(k)) births.set(k, now);
+      data.set([tree.x, births.get(k), tree.y, seed * Math.PI * 2, tree.scale, seed, tree.width, 0], i * 8);
+    });
+    if (this.gl) this.upload(data); else this.pending = data;
+  }
+
+  upload(data) {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    this.count = data.length / 8;
+    this.pending = null;
+    this.map.triggerRepaint();
+  }
+
+  render(gl, options) {
+    const zoom = this.map.getZoom();
+    const grow = clamp((zoom - 14.6) / (15.2 - 14.6), 0, 1);
+    if (!this.count || !this.anchor || grow <= 0) return;
+    const scale = this.anchor.meterInMercatorCoordinateUnits();
+    const local = [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, this.anchor.x, this.anchor.y, 0, 1];
+    const matrix = multiply(options.defaultProjectionData.mainMatrix, local);
+    const now = this.now;
+    const sun = this.dark ? NIGHT_SUN : DAY_SUN;
+    const setUniforms = ({ program, uniforms }) => {
+      gl.useProgram(program);
+      gl.uniformMatrix4fv(uniforms.u_matrix, false, matrix);
+      gl.uniform4f(uniforms.u_light, sun[0], sun[1], sun[2], this.dark ? 1 : 0);
+      gl.uniform4f(uniforms.u_focus, 0, 0, 0, SCENERY_RADIUS - SCENERY_FADE);
+      gl.uniform4f(uniforms.u_options, SCENERY_RADIUS, 1, grow, now);
+      gl.uniform4f(uniforms.u_sky, 1, 1, 1, 0);
+      gl.uniform4f(uniforms.u_wind, this.wind[0], this.wind[1], 0, this.overcast);
+    };
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.DEPTH_TEST);
+
+    setUniforms(this.cast);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LESS);
+    gl.depthMask(true);
+    gl.bindVertexArray(this.shadow.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, this.shadow.count, gl.UNSIGNED_SHORT, 0, this.count);
+
+    setUniforms(this.scenery);
+    gl.disable(gl.BLEND);
+    gl.depthFunc(gl.LEQUAL);
+    gl.bindVertexArray(this.tree.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, this.tree.count, gl.UNSIGNED_SHORT, 0, this.count);
+    gl.bindVertexArray(null);
+
+    if (now - this.latestBirth < 1.5 || Math.hypot(...this.wind) > 3) this.map.triggerRepaint();
+  }
+}
+
+function multiply(a, b) {
+  const out = new Float32Array(16);
+  for (let column = 0; column < 4; column++) {
+    for (let row = 0; row < 4; row++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += a[k * 4 + row] * b[column * 4 + k];
+      out[column * 4 + row] = sum;
+    }
+  }
+  return out;
+}
+
+function collectScenery(map, anchor) {
+  const scale = anchor.meterInMercatorCoordinateUnits();
+  const local = ([lng, lat]) => {
+    const point = maplibregl.MercatorCoordinate.fromLngLat([lng, lat]);
+    return [(point.x - anchor.x) / scale, (point.y - anchor.y) / scale];
+  };
+  const roads = [];
+  for (const feature of map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" })) {
+    const halfWidth = ROAD_HALF_WIDTHS[feature.properties.class];
+    if (!halfWidth) continue;
+    const { type, coordinates } = feature.geometry;
+    const lines = type === "LineString" ? [coordinates] : type === "MultiLineString" ? coordinates : [];
+    for (const line of lines) roads.push({ points: line.map(local), halfWidth, lined: LINED_ROADS.has(feature.properties.class) });
+  }
+  const buildings = [];
+  for (const feature of map.querySourceFeatures("openmaptiles", { sourceLayer: "building" })) {
+    const { type, coordinates } = feature.geometry;
+    const polygons = type === "Polygon" ? [coordinates] : type === "MultiPolygon" ? coordinates : [];
+    for (const polygon of polygons) buildings.push(polygon[0].map(local));
+  }
+  return { roads, buildings, local };
+}
+
+function updateScenery() {
+  const { map, scenery } = state;
+  if (!scenery || !map.getLayer("building-3d")) return;
+  const anchor = maplibregl.MercatorCoordinate.fromLngLat(state.stop.lngLat);
+  const { roads, buildings, local } = collectScenery(map, anchor);
+  if (!roads.length) return;
+  const scale = anchor.meterInMercatorCoordinateUnits();
+  const frame = { absolute: [anchor.x / scale, anchor.y / scale] };
+  const runs = state.crowns?.areas[state.area.key] ?? [];
+  const [originLng, originLat] = state.crowns?.origin ?? [0, 0];
+  const crowns = [];
+  for (let i = 0; i < runs.length; i += 4) {
+    const [x, y] = local([originLng + runs[i] / 1e6, originLat + runs[i + 1] / 1e6]);
+    crowns.push([x, y, runs[i + 2], runs[i + 3]]);
+  }
+  const stops = state.area.stops.map((stop) => local(stop.lngLat));
+  const trees = generateTrees(frame, roads, buildings, crowns, stops);
+  if (state.sceneryKey !== state.stop.code) state.births = new Map();
+  state.sceneryKey = state.stop.code;
+  const before = state.births.size;
+  scenery.setTrees(anchor, trees, state.births);
+  if (state.births.size > before) scenery.latestBirth = scenery.now;
+}
+
+function addScenery() {
+  state.scenery = new SceneryLayer();
+  state.scenery.dark = state.dark;
+  state.scenery.latestBirth = -Infinity;
+  applySkyToScenery();
+  const layers = state.map.getStyle().layers;
+  const above = layers.findIndex((layer) => layer.id === "building-3d");
+  state.map.addLayer(state.scenery, layers[above + 1]?.id);
+  state.sceneryKey = null;
+  state.sceneryDirty = true;
+}
+
+function applySkyToScenery() {
+  if (!state.scenery || !state.sky) return;
+  state.scenery.wind = state.sky.wind;
+  state.scenery.overcast = state.sky.cloud;
+  state.map.triggerRepaint();
 }
 
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null, trees: new Map(), treesDirty: true };
+const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null, crowns: null, scenery: null, sceneryKey: null, sceneryDirty: true, births: new Map() };
 
 function chooseArea(except) {
   const requested = state.areas.find((area) => area.key === params.get("area") || area.stops.some((stop) => stop.code === params.get("stop")));
@@ -893,9 +1325,8 @@ function showStop(area, stop, fly) {
   state.buses.forEach((bus) => bus.add());
   buildPanel(stop);
 
-  state.treesDirty = true;
+  state.sceneryDirty = true;
   if (!sameArea || !state.pins.length) {
-    state.trees = new Map();
     state.pins.forEach((pin) => pin.marker.remove());
     state.pins = area.stops.map((other) => {
       const marker = new maplibregl.Marker({ element: pinElement(other), anchor: "center" }).setLngLat(other.lngLat).addTo(state.map);
@@ -999,6 +1430,7 @@ function updatePanel() {
 function setSky(sky) {
   state.sky = sky;
   state.weather.set(sky, state.dark);
+  applySkyToScenery();
 }
 
 function updateBusSize() {
@@ -1039,7 +1471,7 @@ function applyTheme(dark) {
   state.weather.ready = false;
   state.map.setStyle(themedStyle(state.style, dark));
   state.map.once("style.load", () => {
-    showTrees(state.map, state.trees, dark);
+    addScenery();
     state.weather.ready = true;
     state.weather.set(state.sky, dark);
   });
@@ -1054,6 +1486,11 @@ async function start() {
   ]);
   state.style = style;
   state.areas = data.areas.filter((area) => area.stops.length);
+  fetch("data/crowns.json").then((response) => response.json()).then((crowns) => {
+    state.crowns = crowns;
+    state.sceneryDirty = true;
+    state.map?.triggerRepaint();
+  });
   const theme = params.get("theme");
   state.dark = theme ? theme === "dark" : darkQuery.matches;
   document.documentElement.dataset.theme = state.dark ? "dark" : "light";
@@ -1073,23 +1510,22 @@ async function start() {
     maplibreLogo: false,
     fadeDuration: 0,
   });
-  map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '<a href="https://registry.opendata.aws/dataforgood-fb-forests/">Canopy height © Meta &amp; WRI, CC BY 4.0</a>' }), "bottom-right");
   state.map = map;
   state.weather = new Weather(map, document.getElementById("weather"));
 
   showStop(area, stop, false);
   map.on("zoom", updateBusSize);
   map.on("sourcedata", (event) => {
-    if (event.sourceId === "openmaptiles" && event.isSourceLoaded) state.treesDirty = true;
+    if (event.sourceId === "openmaptiles" && event.isSourceLoaded) state.sceneryDirty = true;
   });
   map.on("idle", () => {
-    if (!state.treesDirty || !map.getLayer("building-3d")) return;
-    state.treesDirty = false;
-    const before = state.trees.size;
-    plantTrees(map, state.stop.lngLat, state.trees);
-    if (state.trees.size !== before || !map.getSource("trees")) showTrees(map, state.trees, state.dark);
+    if (!state.sceneryDirty || !state.scenery) return;
+    state.sceneryDirty = false;
+    updateScenery();
   });
   map.once("style.load", () => {
+    addScenery();
     state.weather.ready = true;
     setSky(chooseSky());
   });
