@@ -1,6 +1,5 @@
 "use strict";
 
-const APP_STORE_URL = "https://apps.apple.com/sg/search?term=Next%20Stop%20bus";
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 const SINGAPORE = [[103.52, 1.13], [104.12, 1.52]];
 const LATITUDE = 1.35;
@@ -26,7 +25,6 @@ const SKIES = {
   haze: { title: "Hazy", cloud: 0, rain: 0, haze: 0.7, wind: [0, 0] },
   windy: { title: "Windy", cloud: 0.35, rain: 0, haze: 0, wind: [6.5, -5.5] },
 };
-const RANDOM_SKIES = ["partly", "cloudy", "showers", "haze", "windy"];
 
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
 const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
@@ -1940,7 +1938,7 @@ function applySkyToScenery() {
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null, crowns: null, scenery: null, sceneryKey: null, sceneryDirty: true, births: new Map() };
+const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, here: null, dark: false, sky: null, crowns: null, scenery: null, sceneryKey: null, sceneryDirty: true, births: new Map() };
 
 function chooseArea(except) {
   const requested = state.areas.find((area) => area.key === params.get("area") || area.stops.some((stop) => stop.code === params.get("stop")));
@@ -1953,10 +1951,114 @@ function chooseStop(area, initial) {
   return requested && initial ? requested : pick(area.stops);
 }
 
-function chooseSky(except) {
+// Live weather from data.gov.sg, read the same way as the app: the nearest two-hour forecast area,
+// rain gauges within 5 km and the nearest wind station.
+
+const WEATHER_API = "https://api-open.data.gov.sg/v2/real-time/api/";
+const GAUGE_REACH = 5000;
+const FEED_TTL = 5 * 60_000;
+const WEATHER_FEEDS = ["two-hr-forecast", "rainfall", "wind-direction", "wind-speed"];
+const feeds = new Map();
+
+const distance = (a, b) => {
+  const [ax, ay] = toLocal(a);
+  const [bx, by] = toLocal(b);
+  return Math.hypot(ax - bx, ay - by);
+};
+const lngLatOf = (location) => [location.longitude, location.latitude];
+
+function feed(path) {
+  const cached = feeds.get(path);
+  if (cached && Date.now() - cached.at < FEED_TTL) return cached.data;
+  const data = fetch(WEATHER_API + path)
+    .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+    .then((body) => body.data)
+    .catch(() => {
+      feeds.delete(path);
+      return null;
+    });
+  feeds.set(path, { at: Date.now(), data });
+  return data;
+}
+
+function nearestReading(readings, lngLat) {
+  const values = new Map((readings?.readings?.[0]?.data ?? []).map((value) => [value.stationId, value.value]));
+  const stations = (readings?.stations ?? []).filter((station) => values.has(station.id));
+  if (!stations.length) return null;
+  const station = stations.reduce((best, next) => (distance(lngLat, lngLatOf(next.location)) < distance(lngLat, lngLatOf(best.location)) ? next : best));
+  return values.get(station.id);
+}
+
+function skyFromForecast(forecast, rainfall) {
+  const text = forecast.toLowerCase();
+  const wet = ["rain", "shower", "drizzle", "thunder"].some((word) => text.includes(word));
+  const sky = { title: forecast || "Fair", cloud: 0, rain: 0, haze: 0, wind: [0, 0] };
+  if (text.includes("partly cloudy")) sky.cloud = 0.4;
+  else if (text.includes("cloudy") || text.includes("overcast")) sky.cloud = 0.75;
+  if (text.includes("haz")) sky.haze = 0.7;
+  else if (text.includes("mist") || text.includes("fog")) sky.haze = 0.5;
+
+  let rain = 0;
+  if (rainfall != null) rain = rainfall > 0 ? Math.min(1, 0.3 + rainfall * 0.6) : 0;
+  else if (wet) rain = text.includes("light") ? 0.35 : text.includes("heavy") ? 1 : 0.65;
+
+  if (wet) sky.cloud = Math.max(sky.cloud, 0.85);
+  if (rain > 0) {
+    sky.cloud = 1;
+    sky.rain = rain;
+  }
+  return sky;
+}
+
+async function liveSky(lngLat) {
+  const [forecast, rainfall, direction, speed] = await Promise.all(WEATHER_FEEDS.map(feed));
+  if (!forecast?.area_metadata?.length) return null;
+  const area = forecast.area_metadata.reduce((best, next) => (distance(lngLat, lngLatOf(next.label_location)) < distance(lngLat, lngLatOf(best.label_location)) ? next : best));
+  const text = forecast.items?.[0]?.forecasts?.find((entry) => entry.area === area.name)?.forecast ?? "";
+
+  let gauge = null;
+  const reading = rainfall?.readings?.[0];
+  if (reading) {
+    const nearby = new Set(rainfall.stations.filter((station) => distance(lngLat, lngLatOf(station.location)) < GAUGE_REACH).map((station) => station.id));
+    if (nearby.size) gauge = Math.max(0, ...reading.data.filter((value) => nearby.has(value.stationId)).map((value) => value.value));
+  }
+
+  const sky = skyFromForecast(text, gauge);
+  const from = nearestReading(direction, lngLat);
+  const knots = nearestReading(speed, lngLat);
+  if (from != null && knots != null) {
+    const toward = ((from + 180) * Math.PI) / 180;
+    const metersPerSecond = knots * 0.514;
+    sky.wind = [Math.sin(toward) * metersPerSecond, -Math.cos(toward) * metersPerSecond];
+  }
+  return sky;
+}
+
+async function updateSky(stop) {
   const requested = SKIES[params.get("weather")];
-  if (requested && !except) return requested;
-  return SKIES[pick(RANDOM_SKIES.filter((key) => SKIES[key] !== except))];
+  if (requested) return setSky(requested);
+  const sky = await liveSky(stop.lngLat);
+  if (sky && state.stop === stop && state.weather.ready) setSky(sky);
+}
+
+// The visitor's location: open the nearest stop when they are in Singapore and allow it.
+
+const HERE_REACH = 1200;
+
+function locate() {
+  if (params.has("area") || params.has("stop") || !navigator.geolocation) return;
+  const initial = state.stop;
+  navigator.geolocation.getCurrentPosition(({ coords }) => {
+    const here = [coords.longitude, coords.latitude];
+    const inside = here[0] >= SINGAPORE[0][0] && here[0] <= SINGAPORE[1][0] && here[1] >= SINGAPORE[0][1] && here[1] <= SINGAPORE[1][1];
+    if (!inside) return;
+    state.here = here;
+    if (state.stop !== initial) return;
+    const [area, stop] = state.areas
+      .flatMap((area) => area.stops.map((stop) => [area, stop]))
+      .reduce((best, next) => (distance(here, next[1].lngLat) < distance(here, best[1].lngLat) ? next : best));
+    showStop(area, stop, true);
+  }, () => {}, { timeout: 15_000, maximumAge: 10 * 60_000 });
 }
 
 
@@ -2014,9 +2116,12 @@ function showStop(area, stop, fly) {
       const marker = new maplibregl.Marker({ element: pinElement(other), anchor: "center" }).setLngLat(other.lngLat).addTo(state.map);
       return { stop: other, marker };
     });
+  }
+  const near = state.here && distance(state.here, stop.lngLat) < HERE_REACH;
+  if (!sameArea || !state.youMarker || near) {
     state.youMarker?.remove();
     const [sx, sy] = toLocal(stop.lngLat);
-    state.youMarker = new maplibregl.Marker({ element: youElement(), anchor: "bottom", offset: [0, 11] }).setLngLat(toLngLat([sx - 95, sy + 45])).addTo(state.map);
+    state.youMarker = new maplibregl.Marker({ element: youElement(), anchor: "bottom", offset: [0, 11] }).setLngLat(near ? state.here : toLngLat([sx - 95, sy + 45])).addTo(state.map);
   }
   for (const pin of state.pins) pin.marker.getElement().classList.toggle("selected", pin.stop === stop);
 
@@ -2027,6 +2132,7 @@ function showStop(area, stop, fly) {
     bearing: sameArea ? state.map.getBearing() : Math.round(Math.random() * 40 - 20),
     padding: trayInsets(),
   };
+  if (state.weather.ready && !sameArea) updateSky(stop);
   if (fly && !reduceMotion) state.map.flyTo({ ...camera, duration: sameArea ? 1200 : 2600, essential: false });
   else state.map.jumpTo(camera);
   updateBusSize();
@@ -2176,8 +2282,7 @@ function applyTheme(dark) {
 }
 
 async function start() {
-  for (const link of document.querySelectorAll("[data-download]")) link.href = APP_STORE_URL;
-
+  if (!params.has("weather")) WEATHER_FEEDS.forEach(feed);
   const [style, data] = await Promise.all([
     fetch(STYLE_URL).then((response) => response.json()),
     fetch("data/areas.json").then((response) => response.json()),
@@ -2226,14 +2331,14 @@ async function start() {
   map.once("style.load", () => {
     addScenery();
     state.weather.ready = true;
-    setSky(chooseSky());
+    setSky(SKIES[params.get("weather")] ?? SKIES.clear);
+    updateSky(state.stop);
   });
 
   document.getElementById("shuffle").addEventListener("click", () => {
     const stops = state.areas.flatMap((area) => area.stops.map((stop) => [area, stop])).filter(([, stop]) => stop !== state.stop);
     const [next, stop] = pick(stops);
     showStop(next, stop, true);
-    setSky(chooseSky(state.sky));
   });
   if (!theme) darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
   addEventListener("resize", () => {
@@ -2255,6 +2360,8 @@ async function start() {
     state.weather.step(now, dt);
   };
   requestAnimationFrame(tick);
+  locate();
+  setInterval(() => updateSky(state.stop), FEED_TTL * 2);
   document.addEventListener("visibilitychange", () => {
     running = !document.hidden;
     if (running) {

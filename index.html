@@ -1,63 +1,43 @@
 <!doctype html>
-<html lang="en-SG">
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Check live Singapore bus arrivals and see your bus on the map with NextStop.">
-  <meta name="apple-itunes-app" content="app-id=1487419506">
-  <meta name="theme-color" content="#f8f6ef">
-  <link rel="icon" href="./assets/icon.png">
-  <link rel="stylesheet" href="./styles.css">
-  <title>NextStop — Live Singapore bus arrivals</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Next Stop shows every bus arriving near you on a calm 3D map of Singapore. This demo drives simulated buses on real routes.">
+<meta name="theme-color" content="#f3f1ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#11161d" media="(prefers-color-scheme: dark)">
+<title>Next Stop – Singapore bus arrivals</title>
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<link rel="stylesheet" href="demo.css">
 </head>
 <body>
-  <header class="shell site-header">
-    <a class="brand" href="./" aria-label="NextStop home">
-      <img src="./assets/icon.png" width="38" height="38" alt="">
-      <span>NextStop<span class="brand-city">Singapore</span></span>
-    </a>
-    <nav aria-label="Main navigation">
-      <a href="./support/">Support</a>
-      <a class="header-download" href="https://apps.apple.com/sg/app/nextstop-singapore/id1487419506">App Store <span aria-hidden="true">↗</span></a>
-    </nav>
-  </header>
-  <main>
-    <section class="hero shell" aria-labelledby="hero-title">
-      <div class="hero-copy">
-        <div class="eyebrow"><span class="stop-dot"></span> Singapore bus arrivals</div>
-        <h1 id="hero-title">See when your<br>bus is <em>coming.</em></h1>
-        <p class="intro">Check the next arrivals at your stop, see how crowded the bus is and follow it on the map while you wait.</p>
-        <a class="button" href="https://apps.apple.com/sg/app/nextstop-singapore/id1487419506">Download on the App Store <span aria-hidden="true">↗</span></a>
-        <p class="platforms">iPhone <span>·</span> iPad <span>·</span> Apple Watch</p>
-      </div>
-      <figure class="hero-art">
-        <svg class="routes" viewBox="0 0 600 565" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-          <path d="M-30 192H97l104 104h173l92-92h178M-30 379H74l92 92h245l83-83h149" fill="none" stroke="#e5a159" stroke-width="4"/>
-          <path d="M117-25v166l94 94h183l130 130v235M406-18v135l-74 74v146L189 480v115" fill="none" stroke="#e8bd8a" stroke-width="3"/>
-          <g fill="#fce3c0" stroke="#ce7138" stroke-width="3"><circle cx="97" cy="192" r="7"/><circle cx="74" cy="379" r="7"/><circle cx="466" cy="204" r="7"/><circle cx="494" cy="388" r="7"/><circle cx="189" cy="480" r="7"/></g>
-        </svg>
-        <img class="phone phone-secondary" src="./assets/buses.webp" width="620" height="1348" alt="3.0 preview showing a 3D bus approaching the Opp Bugis Station stop">
-        <img class="phone phone-primary" src="./assets/arrivals.webp" width="620" height="1348" alt="3.0 preview showing live arrival estimates at Opp Bugis Station Exit C">
-        <figcaption>NextStop 3.0 preview</figcaption>
-      </figure>
-    </section>
-    <section class="release shell" aria-labelledby="release-title">
-      <div>
-        <div class="eyebrow"><span class="stop-dot"></span> A look at version 3.0</div>
-        <h2 id="release-title">From the stop to the Lock Screen.</h2>
-        <img class="activity-preview" src="./assets/live-activity.webp" width="620" height="1348" alt="NextStop bus arrival shown as an iPhone Live Activity" loading="lazy">
-      </div>
-      <ol class="feature-list">
-        <li><span class="route-number" aria-hidden="true">01</span><div><h3>Follow buses in 3D</h3><p>See buses move through the city and explore the stops along each route.</p></div></li>
-        <li><span class="route-number" aria-hidden="true">02</span><div><h3>See the weather on the map</h3><p>Check rain, clouds and thunderstorms before heading to the stop.</p></div></li>
-        <li><span class="route-number" aria-hidden="true">03</span><div><h3>Glance at your arrival</h3><p>Keep an arrival estimate in view on your Lock Screen or in the Dynamic Island with Live Activities.</p></div></li>
-        <li><span class="route-number" aria-hidden="true">04</span><div><h3>Take a turn as Bus Uncle</h3><p>Pick a real Singapore bus route and let the simulated bus drive while you focus.</p></div></li>
-      </ol>
-    </section>
-  </main>
-  <footer class="shell site-footer">
-    <p>NextStop · Bus arrival estimates from LTA DataMall</p>
-    <nav aria-label="Footer navigation"><a href="./support/">Support</a><a href="./privacy.html">Privacy</a></nav>
-  </footer>
+<div id="map"></div>
+<div id="shade" aria-hidden="true"></div>
+<div id="haze" aria-hidden="true"></div>
+<canvas id="weather" aria-hidden="true"></canvas>
+
+<aside class="tray" aria-label="A bus stop in Singapore">
+  <div class="grabber" aria-hidden="true"></div>
+  <div class="tray-head">
+    <div id="stop" class="stop"><b></b><span><code></code> <i></i></span></div>
+    <button id="shuffle" type="button" aria-label="Show another bus stop" title="Another bus stop">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 7h3.5c2 0 3.2.9 4.3 2.6l2.4 4.8c1.1 1.7 2.3 2.6 4.3 2.6H21M3 17h3.5c2 0 3.2-.9 4.3-2.6M13.2 9.6c1.1-1.7 2.3-2.6 4.3-2.6H21M18 4l3 3-3 3M18 14l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+  <div class="timeline">
+    <div class="track"><span class="now"></span><div id="plates"></div></div>
+    <div class="ticks" aria-hidden="true"><span>Now</span><span style="--at: 0.5">5</span><span style="--at: 0.7071">10</span><span style="--at: 0.866">15</span><span>20m</span></div>
+  </div>
+  <div class="cta">
+    <h2>To view more</h2>
+    <p class="soon"><small>Coming soon on the</small><b>App Store</b></p>
+  </div>
+  <p class="credit"><a href="https://x.com/nsjunxiu" rel="noopener">made by @nsjunxiu</a><span aria-hidden="true">·</span><a href="support/">Support</a><span aria-hidden="true">·</span><a href="privacy.html">Privacy</a></p>
+</aside>
+
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="demo.js"></script>
 </body>
 </html>
