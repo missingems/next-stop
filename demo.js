@@ -2373,7 +2373,7 @@ function applyTheme(dark) {
   state.dark = dark;
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   state.weather.ready = false;
-  state.map.setStyle(themedStyle(state.style, dark));
+  state.map.setStyle(themedStyle(state.style, dark), { diff: false });
   state.map.once("style.load", () => {
     addScenery();
     addWeather();
