@@ -119,9 +119,6 @@ button { font: inherit; color: inherit; }
 
 /* Map annotations */
 
-.bus { width: var(--bus-w, 9px); height: var(--bus-l, 30px); pointer-events: none; transition: opacity 1s linear; }
-.bus svg { display: block; width: 100%; height: 100%; overflow: visible; }
-
 .bubble-anchor { z-index: 2; pointer-events: none; }
 .bubble {
   position: relative;
@@ -156,22 +153,16 @@ button { font: inherit; color: inherit; }
 .far .bubble-anchor { visibility: hidden; }
 
 .pin { border: 0; padding: 0; background: none; cursor: pointer; }
-.pin .square {
-  display: grid; place-items: center;
-  width: 28px; height: 28px; border-radius: 8px;
-  background: linear-gradient(#2aa6e4, #0b8bcc);
-  box-shadow: 0 0 0 1.5px #fff, 0 2px 6px rgba(0, 0, 0, 0.25);
-}
-.pin .square svg { width: 19px; height: 19px; }
+.pin .square { display: block; width: 37px; height: 37px; }
 .pin .label {
   position: absolute;
   bottom: calc(100% + 12px);
   left: 50%;
   display: none;
   align-items: center;
-  gap: 10px;
-  padding: 6px 18px 6px 6px;
-  border-radius: 24px;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 17px;
   background: var(--bubble);
   color: var(--fg);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
@@ -188,12 +179,17 @@ button { font: inherit; color: inherit; }
   background: var(--bubble);
   transform: translateX(-50%) rotate(45deg);
 }
-.pin .dot { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(#2aa6e4, #0b8bcc); }
-.pin .dot svg { width: 20px; height: 20px; }
-.pin .name { position: relative; z-index: 1; font: 600 17px/1 var(--text); }
+.pin .dot { width: 26px; height: 26px; border-radius: 50%; background: #059bd8; }
+.pin .dot::before {
+  content: ""; display: block; width: 15px; height: 15px; margin: 5.5px;
+  background: #fff;
+  -webkit-mask: url("images/stop-glyph.png") center / contain no-repeat;
+  mask: url("images/stop-glyph.png") center / contain no-repeat;
+}
+.pin .name { position: relative; z-index: 1; font: 600 14px/1 var(--text); }
 .pin.selected { z-index: 1; }
 .pin.selected .label { display: flex; }
-.pin:focus-visible .square { outline: 2px solid var(--tint); outline-offset: 3px; }
+.pin:focus-visible .square { outline: 2px solid var(--tint); outline-offset: -6px; border-radius: 9px; }
 
 .you { display: flex; flex-direction: column; align-items: center; gap: 12px; pointer-events: none; }
 .you .hint {
@@ -229,5 +225,5 @@ button { font: inherit; color: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .chip.arriving { animation: none; }
-  #shade, #haze, .bus { transition: none; }
+  #shade, #haze { transition: none; }
 }

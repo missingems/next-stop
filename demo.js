@@ -577,16 +577,6 @@ function gustSprite(angle, scale) {
 const BUS_LENGTH = 12;
 const APPROACH_METERS = 1500;
 const AVERAGE_SPEED = 6;
-const BUS_SVG = (operator) => `
-<svg viewBox="0 0 30 120" aria-hidden="true">
-  <rect x="3" y="6" width="28" height="116" rx="6" fill="rgba(0,0,0,0.22)"/>
-  <rect x="1" y="1" width="28" height="116" rx="6" fill="#5ea53a" stroke="#3d7f22" stroke-width="2"/>
-  <rect x="5" y="17" width="20" height="96" rx="4" fill="#eef1ea"/>
-  <path d="M4 9 Q15 1 26 9 L26 14 L4 14 Z" fill="#26313d"/>
-  <rect x="8" y="30" width="14" height="18" rx="3" fill="#d6dbd1"/>
-  <rect x="8" y="72" width="14" height="22" rx="3" fill="#d6dbd1"/>
-  <rect x="1.5" y="20" width="3" height="10" rx="1.5" fill="${operator}"/>
-</svg>`;
 const TAIL_SVG = `<svg class="tail" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 0 L16 11.5 L3.4 15.1 Q0 16.3 0.9 12.7 Z"/></svg>`;
 
 class Route {
@@ -594,6 +584,7 @@ class Route {
     this.service = data.service;
     this.operator = OPERATORS[data.operator] ?? OPERATORS.GAS;
     this.stopAt = data.stopAt;
+    this.destination = data.destination;
     this.points = decodePolyline(data.line).map(toLocal);
     this.distances = [0];
     for (let i = 1; i < this.points.length; i++) {
@@ -633,10 +624,8 @@ class Bus {
     this.route = route;
     this.lane = lane;
     this.cruise = 8 + Math.random() * 3;
-    this.element = document.createElement("div");
-    this.element.className = "bus";
-    this.element.innerHTML = BUS_SVG(route.operator);
-    this.marker = new maplibregl.Marker({ element: this.element, rotationAlignment: "map", pitchAlignment: "map" });
+    this.opacity = 0;
+    this.sign = { number: route.service, destination: route.destination };
     this.bubbleElement = document.createElement("div");
     this.bubbleElement.className = "bubble-anchor";
     this.bubbleElement.innerHTML = `<div class="bubble">${TAIL_SVG}<span class="plate" style="background:${route.operator}">${route.service}</span><span class="chip"></span></div>`;
@@ -661,8 +650,8 @@ class Bus {
     this.dwell = 0;
     this.served = false;
     this.load = randomLoad();
+    this.kind = Math.random() < 0.45 ? "double" : "single";
     this.chip.style.background = this.load.color;
-    this.element.style.opacity = "1";
     this.bubbleVisible = true;
     this.crowded = false;
     this.applyBubbleOpacity();
@@ -670,13 +659,10 @@ class Bus {
   }
 
   add() {
-    const position = toLngLat(this.route.at(this.distance));
-    this.marker.setLngLat(position).addTo(this.map);
-    this.bubbleMarker.setLngLat(position).addTo(this.map);
+    this.bubbleMarker.setLngLat(toLngLat(this.route.at(this.distance))).addTo(this.map);
   }
 
   remove() {
-    this.marker.remove();
     this.bubbleMarker.remove();
   }
 
@@ -685,6 +671,7 @@ class Bus {
   }
 
   step(dt, others) {
+    this.opacity = clamp(this.opacity + (this.state === "gone" ? -dt : dt), 0, 1);
     if (this.state === "gone") {
       this.wait -= dt;
       if (this.wait <= 0) this.spawn(this.entry);
@@ -723,15 +710,12 @@ class Bus {
       if (this.distance >= this.route.length - 1) {
         this.state = "gone";
         this.wait = 4 + Math.random() * 16;
-        this.element.style.opacity = "0";
         return;
       }
     }
 
     this.updateChip();
-    const position = toLngLat(this.position);
-    this.marker.setLngLat(position).setRotation(this.route.heading(this.distance));
-    this.bubbleMarker.setLngLat(position);
+    this.bubbleMarker.setLngLat(toLngLat(this.position));
   }
 
   updateChip() {
@@ -899,6 +883,17 @@ class MeshBuilder {
     this.indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
   }
 
+  box(center, size, material) {
+    const half = size.map((v) => v / 2);
+    const faces = [[[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]], [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
+      [[0, -1, 0], [1, 0, 0], [0, 0, 1]], [[0, 0, 1], [1, 0, 0], [0, 1, 0]], [[0, 0, -1], [0, 1, 0], [1, 0, 0]]];
+    for (const [normal, u, v] of faces) {
+      const corners = [];
+      for (const a of [-1, 1]) for (const b of [-1, 1]) corners.push([0, 1, 2].map((i) => center[i] + (normal[i] + u[i] * a + v[i] * b) * half[i]));
+      this.quad(corners, normal, material);
+    }
+  }
+
   prism(height, bottom, top, sides, material) {
     for (let side = 0; side < sides; side++) {
       const a = side / sides * Math.PI * 2, b = (side + 1) / sides * Math.PI * 2, m = (a + b) / 2;
@@ -944,6 +939,34 @@ function treeMesh() {
   builder.blob([0, 5.6, 0], [3.1, 2.1, 3.1], 1, 1);
   builder.blob([1.2, 6.6, -0.7], [1.9, 1.4, 1.9], 0, 1);
   builder.blob([-1.3, 6.3, 0.9], [1.7, 1.3, 1.7], 0, 1);
+  return builder;
+}
+
+function stopPoleMesh() {
+  const builder = new MeshBuilder();
+  builder.prism(1.25, 0.07, 0.07, 8, 2);
+  builder.box([0, 2.97, 0], [0.6, 0.12, 0.14], 7);
+  builder.box([0, 2.97, 0], [0.2, 0.04, 0.15], 11);
+  builder.box([0, 2.795, 0], [0.6, 0.23, 0.14], 8);
+  builder.box([0, 2.795, 0], [0.13, 0.11, 0.15], 9);
+  builder.box([0, 2.525, 0], [0.6, 0.31, 0.14], 9);
+  builder.box([0, 2.355, 0], [0.6, 0.03, 0.14], 7);
+  builder.box([0, 1.785, 0], [0.6, 1.11, 0.14], 10);
+  for (const x of [-0.32, 0.32]) builder.box([x, 2.13, 0], [0.04, 1.86, 0.16], 2);
+  builder.box([0, 3.05, 0], [0.68, 0.04, 0.16], 2);
+  builder.box([0, 1.21, 0], [0.68, 0.04, 0.16], 2);
+  return builder;
+}
+
+function shelterMesh() {
+  const builder = new MeshBuilder();
+  builder.box([0, 2.75, 0.15], [6.6, 0.16, 2.7], 4);
+  builder.box([0, 1.4, 1.2], [6.0, 2.5, 0.06], 5);
+  for (const x of [-3.0, 0, 3.0]) builder.box([x, 1.35, 1.12], [0.12, 2.7, 0.12], 2);
+  builder.box([0, 0.46, 0.8], [3.6, 0.08, 0.5], 6);
+  builder.box([-1.5, 0.23, 0.8], [0.08, 0.46, 0.4], 2);
+  builder.box([1.5, 0.23, 0.8], [0.08, 0.46, 0.4], 2);
+  builder.box([3.25, 1.3, 0.1], [0.08, 2.0, 1.1], 5);
   return builder;
 }
 
@@ -1021,19 +1044,33 @@ void main() {
   float threshold = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   if (v_visibility < 0.999 && v_visibility <= threshold) discard;
   float night = u_light.w;
-  vec3 color;
-  if (v_material < 0.5) {
-    color = vec3(0.34, 0.26, 0.20);
-  } else {
+  int material = int(v_material + 0.5);
+  vec3 color = vec3(0.46, 0.36, 0.26);
+  vec3 emissive = vec3(0.0);
+  if (material == 0) color = vec3(0.34, 0.26, 0.20);
+  else if (material == 1) {
     vec3 low = mix(vec3(0.13, 0.27, 0.11), vec3(0.20, 0.33, 0.12), v_seed);
     vec3 high = mix(vec3(0.27, 0.45, 0.17), vec3(0.36, 0.50, 0.20), fract(v_seed * 7.0));
     color = mix(low, high, smoothstep(3.6, 7.8, v_height));
   }
+  else if (material == 2) color = vec3(0.52, 0.55, 0.58);
+  else if (material == 3) { color = vec3(0.72, 0.73, 0.74); emissive = vec3(2.4, 1.9, 1.2) * night; }
+  else if (material == 4) color = vec3(0.84, 0.85, 0.86);
+  else if (material == 5) { color = vec3(0.30, 0.40, 0.46); emissive = vec3(0.55, 0.68, 0.80) * night; }
+  else if (material == 7) color = vec3(0.006, 0.045, 0.055);
+  else if (material == 8) { color = vec3(0.006, 0.20, 0.26); emissive = vec3(0.0, 0.10, 0.13) * night; }
+  else if (material == 9) { color = vec3(0.86, 0.88, 0.88); emissive = vec3(0.45, 0.46, 0.46) * night; }
+  else if (material == 10) {
+    float row = fract((v_height - 1.23) / 0.13875);
+    color = vec3(0.42, 0.68, 0.06) * (row < 0.14 ? 0.72 : 1.0);
+    emissive = color * 0.55 * night;
+  }
+  else if (material == 11) { color = vec3(0.95, 0.36, 0.02); emissive = vec3(0.5, 0.18, 0.0) * night; }
   vec3 normal = normalize(v_normal);
   float sun = clamp(dot(normal, u_light.xyz), 0.0, 1.0);
   float sky = 0.55 + 0.45 * clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
   float daylight = 1.0 - night * 0.7;
-  vec3 lit = color * (sky * mix(0.62, 0.16, night) + sun * 0.55 * daylight * u_sky.rgb);
+  vec3 lit = color * (sky * mix(0.62, 0.16, night) + sun * 0.55 * daylight * u_sky.rgb) + emissive;
   fragColor = vec4(encode(lit), 1.0);
 }`;
 
@@ -1053,6 +1090,460 @@ in float v_opacity;
 out vec4 fragColor;
 void main() { fragColor = vec4(0.0, 0.0, 0.0, v_opacity); }`;
 
+// The app's bus (RouteBusModel and RouteBusShaders.metal): palette livery, LED signs, a
+// raytraced cabin with passengers, a ground shadow and an outline where buildings hide it.
+
+const BUS_VERTEX = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+uniform mat4 u_matrix, u_model;
+uniform vec4 u_variant;
+uniform float u_paletteCount;
+out vec3 v_normal, v_local, v_localNormal;
+out vec2 v_uv;
+float trimOffset(int slot) {
+  if (slot == 3) return 0.03;
+  if (slot == 4) return 0.045;
+  if (slot == 5) return 0.012;
+  if (slot >= 10 && slot <= 13) return 0.02;
+  return 0.0;
+}
+void main() {
+  vec3 p = a_position;
+  if (p.y > 2.73 && !(p.z > 6.01 && p.y < 3.0)) p.y += u_variant.x;
+  if (p.z < -2.1) p.z -= u_variant.y;
+  p.z += u_variant.y / 2.0;
+  vec3 normal = dot(a_normal, p - vec3(0, 1.6, 0)) < 0.0 ? -a_normal : a_normal;
+  vec3 position = p + normal * trimOffset(int(a_uv.x * u_paletteCount));
+  vec4 world = u_model * vec4(position, 1);
+  gl_Position = u_matrix * vec4(world.x, world.z, world.y, 1);
+  v_normal = normalize((u_model * vec4(normal, 0)).xyz);
+  v_local = position;
+  v_localNormal = normal;
+  v_uv = a_uv;
+}`;
+
+const BUS_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D u_baseColor, u_roughness, u_sign;
+uniform vec3 u_light, u_eye;
+uniform vec4 u_variant, u_outline;
+uniform float u_occupancy, u_night, u_paletteCount, u_opacity, u_occluded;
+in vec3 v_normal, v_local, v_localNormal;
+in vec2 v_uv;
+out vec4 fragColor;
+
+const int bodySlot = 0, skirtSlot = 1, windowSlot = 3, windowHighlightSlot = 4, panelSlot = 5;
+const int headlightSlot = 10, signGlyphSlot = 11, tailLightSlot = 12;
+const vec3 bandColor = vec3(0.010, 0.011, 0.012);
+const vec3 roofColor = vec3(0.56, 0.58, 0.59);
+const float signPitch = 0.0175;
+const vec3 cabinMinimum = vec3(-1.2, 0.95, -5.8);
+const vec3 cabinMaximum = vec3(1.2, 2.8, 5.85);
+const vec3 cabinLight = vec3(1.0, 0.92, 0.78);
+const float deckCut = 2.73, bendCut = -2.1, panePitch = 1.225;
+
+struct Hit { float distance; vec3 normal; vec3 color; };
+
+float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+
+void ellipsoid(vec3 origin, vec3 direction, vec3 center, vec3 radii, vec3 color, inout Hit hit) {
+  vec3 offset = (origin - center) / radii;
+  vec3 ray = direction / radii;
+  float a = dot(ray, ray), b = dot(offset, ray);
+  float h = b * b - a * (dot(offset, offset) - 1.0);
+  if (h < 0.0) return;
+  float t = (-b - sqrt(h)) / a;
+  if (t <= 0.0 || t >= hit.distance) return;
+  hit.distance = t;
+  hit.normal = normalize((origin + direction * t - center) / (radii * radii));
+  hit.color = color;
+}
+
+void capsule(vec3 origin, vec3 direction, vec3 start, vec3 end, float radius, vec3 color, inout Hit hit) {
+  vec3 axis = end - start, offset = origin - start;
+  float axisLength = dot(axis, axis), axisRay = dot(axis, direction), axisOffset = dot(axis, offset);
+  float a = axisLength - axisRay * axisRay;
+  float b = axisLength * dot(direction, offset) - axisOffset * axisRay;
+  float c = axisLength * dot(offset, offset) - axisOffset * axisOffset - radius * radius * axisLength;
+  float h = b * b - a * c;
+  if (h < 0.0) return;
+  float t = (-b - sqrt(h)) / a;
+  float y = axisOffset + t * axisRay;
+  if (y <= 0.0 || y >= axisLength) {
+    vec3 cap = y <= 0.0 ? offset : origin - end;
+    b = dot(direction, cap);
+    h = b * b - (dot(cap, cap) - radius * radius);
+    if (h < 0.0) return;
+    t = -b - sqrt(h);
+  }
+  if (t <= 0.0 || t >= hit.distance) return;
+  vec3 point = origin + direction * t - start;
+  float along = clamp(dot(point, axis) / axisLength, 0.0, 1.0);
+  hit.distance = t;
+  hit.normal = (point - along * axis) / radius;
+  hit.color = color;
+}
+
+void box(vec3 origin, vec3 direction, vec3 center, vec3 extent, vec3 color, inout Hit hit) {
+  vec3 inverse = 1.0 / direction;
+  vec3 n = inverse * (origin - center);
+  vec3 k = abs(inverse) * extent;
+  vec3 near = -n - k, far = -n + k;
+  float tNear = max(max(near.x, near.y), near.z);
+  float tFar = min(min(far.x, far.y), far.z);
+  if (tNear > tFar || tNear <= 0.0 || tNear >= hit.distance) return;
+  hit.distance = tNear;
+  hit.normal = -sign(direction) * step(near.yzx, near.xyz) * step(near.zxy, near.xyz);
+  hit.color = color;
+}
+
+bool nearSphere(vec3 origin, vec3 direction, vec3 center, float radius) {
+  vec3 offset = origin - center;
+  float b = dot(offset, direction);
+  return b * b - (dot(offset, offset) - radius * radius) >= 0.0;
+}
+
+void person(vec3 origin, vec3 direction, vec3 hips, bool standing, float seed, inout Hit hit) {
+  vec3 clothing[7] = vec3[7](vec3(0.10, 0.12, 0.18), vec3(0.55, 0.56, 0.58), vec3(0.42, 0.10, 0.10), vec3(0.12, 0.28, 0.42),
+    vec3(0.78, 0.76, 0.70), vec3(0.20, 0.30, 0.18), vec3(0.62, 0.48, 0.30));
+  vec3 skins[4] = vec3[4](vec3(0.80, 0.62, 0.48), vec3(0.66, 0.47, 0.34), vec3(0.48, 0.33, 0.22), vec3(0.32, 0.21, 0.14));
+  vec3 hairs[3] = vec3[3](vec3(0.04, 0.035, 0.03), vec3(0.16, 0.10, 0.06), vec3(0.42, 0.42, 0.42));
+  float scale = 0.92 + hash1(seed + 17.0) * 0.16;
+  vec3 chest = hips + vec3(0, 0.36, 0) * scale;
+  if (!nearSphere(origin, direction, (chest + vec3(0, 0.15, 0) + vec3(hips.x, cabinMinimum.y, hips.z + (standing ? 0.0 : 0.4))) * 0.5, standing ? 0.95 : 0.75)) return;
+  vec3 shirt = clothing[int(hash1(seed + 7.0) * 7.0) % 7];
+  vec3 skin = skins[int(hash1(seed + 13.0) * 4.0) % 4];
+  vec3 hair = hairs[int(hash1(seed + 11.0) * 3.0) % 3];
+  vec3 neck = chest + vec3(0, 0.2, 0) * scale;
+  vec3 head = neck + vec3(0, 0.13, 0) * scale;
+  float shoulder = 0.19 * scale;
+  capsule(origin, direction, hips + vec3(0, 0.08, 0), chest, 0.15 * scale, shirt, hit);
+  capsule(origin, direction, chest + vec3(-shoulder + 0.06, 0.05, 0), chest + vec3(shoulder - 0.06, 0.05, 0), 0.1 * scale, shirt, hit);
+  capsule(origin, direction, neck - vec3(0, 0.06, 0), neck, 0.045 * scale, skin, hit);
+  ellipsoid(origin, direction, head, vec3(0.08, 0.1, 0.09) * scale, skin, hit);
+  ellipsoid(origin, direction, head + vec3(0, 0.035, -0.012) * scale, vec3(0.086, 0.08, 0.094) * scale, hair, hit);
+  vec3 trousers[4] = vec3[4](vec3(0.08, 0.09, 0.12), vec3(0.20, 0.22, 0.28), vec3(0.30, 0.27, 0.22), vec3(0.12, 0.12, 0.12));
+  vec3 trouser = trousers[int(hash1(seed + 19.0) * 4.0) % 4];
+  for (int leg = 0; leg < 2; leg++) {
+    vec3 hip = hips + vec3(leg == 0 ? -0.09 : 0.09, 0, 0) * scale;
+    if (standing) {
+      vec3 foot = vec3(hip.x, cabinMinimum.y + 0.06, hip.z + (leg == 0 ? 0.05 : -0.05));
+      capsule(origin, direction, hip, foot, 0.07 * scale, trouser, hit);
+    } else {
+      vec3 knee = hip + vec3(0, 0.02, 0.42) * scale;
+      capsule(origin, direction, hip, knee, 0.075 * scale, trouser, hit);
+      capsule(origin, direction, knee, vec3(knee.x, cabinMinimum.y + 0.06, knee.z + 0.04), 0.06 * scale, trouser, hit);
+    }
+  }
+  vec3 leftShoulder = chest + vec3(-shoulder, 0.05, 0);
+  vec3 rightShoulder = chest + vec3(shoulder, 0.05, 0);
+  if (standing) {
+    vec3 grip = vec3(rightShoulder.x + 0.05, 2.42, rightShoulder.z + 0.05);
+    capsule(origin, direction, rightShoulder, grip, 0.045 * scale, shirt * 0.9 + skin * 0.1, hit);
+    capsule(origin, direction, leftShoulder, leftShoulder + vec3(-0.03, -0.42, 0.04) * scale, 0.045 * scale, shirt * 0.9, hit);
+  } else {
+    capsule(origin, direction, leftShoulder, hips + vec3(-0.12, 0.06, 0.24) * scale, 0.045 * scale, shirt * 0.9, hit);
+    capsule(origin, direction, rightShoulder, hips + vec3(0.12, 0.06, 0.24) * scale, 0.045 * scale, shirt * 0.9, hit);
+  }
+}
+
+vec3 cabin(vec3 origin, vec3 direction) {
+  vec3 inverse = 1.0 / direction;
+  vec3 near = min((cabinMinimum - origin) * inverse, (cabinMaximum - origin) * inverse);
+  vec3 far = max((cabinMinimum - origin) * inverse, (cabinMaximum - origin) * inverse);
+  float enter = max(max(max(near.x, near.y), near.z), 0.0);
+  float exit = min(min(far.x, far.y), far.z);
+  vec3 point = origin + direction * exit;
+  float night = u_night;
+  vec3 ambient = mix(vec3(0.42, 0.44, 0.46), cabinLight * 1.1, night);
+  vec3 color;
+  if (exit == far.y && direction.y > 0.0) {
+    float panel = step(0.5, fract(point.z * 0.9));
+    color = mix(vec3(0.62, 0.62, 0.60), mix(cabinLight * 1.6, vec3(0.80), 0.25 * panel), night);
+  } else if (exit == far.y) {
+    color = vec3(0.20, 0.19, 0.18) * ambient;
+  } else if (exit == far.x && point.y > 1.37 && point.y < 2.66) {
+    color = mix(vec3(0.50, 0.55, 0.60), vec3(0.04, 0.05, 0.07), night);
+  } else {
+    color = vec3(0.42, 0.42, 0.44) * ambient;
+  }
+  Hit hit = Hit(exit, vec3(0), vec3(0));
+  float zEnter = origin.z + direction.z * enter;
+  float zLow = min(zEnter, point.z) - 0.6, zHigh = max(zEnter, point.z) + 0.6;
+  float seated = clamp(u_occupancy * 2.0, 0.0, 1.0);
+  float standingShare = clamp(u_occupancy * 2.0 - 1.0, 0.0, 1.0);
+  const vec3 fabric = vec3(0.16, 0.18, 0.42), plastic = vec3(0.55, 0.56, 0.58), pole = vec3(0.95, 0.72, 0.08);
+  for (int row = 0; row < 11; row++) {
+    float z = -4.6 + float(row) * 0.85;
+    if (z < zLow || z > zHigh) continue;
+    for (int side = 0; side < 2; side++) {
+      float x = side == 0 ? -0.65 : 0.65;
+      box(origin, direction, vec3(x, 1.42, z), vec3(0.4, 0.06, 0.22), fabric, hit);
+      box(origin, direction, vec3(x, 1.72, z - 0.25), vec3(0.4, 0.3, 0.04), fabric, hit);
+      box(origin, direction, vec3(x, 2.03, z - 0.25), vec3(0.4, 0.025, 0.05), plastic, hit);
+      for (int seat = 0; seat < 2; seat++) {
+        float seed = float(row * 4 + side * 2 + seat);
+        if (hash1(seed) >= seated) continue;
+        person(origin, direction, vec3(x + (seat == 0 ? -0.2 : 0.2), 1.5, z - 0.08), false, seed, hit);
+      }
+    }
+    if (row % 2 == 0) {
+      capsule(origin, direction, vec3(-0.27, 0.95, z + 0.3), vec3(-0.27, 2.45, z + 0.3), 0.02, pole, hit);
+      capsule(origin, direction, vec3(0.27, 0.95, z + 0.3), vec3(0.27, 2.45, z + 0.3), 0.02, pole, hit);
+    }
+  }
+  capsule(origin, direction, vec3(-0.3, 2.45, -5.2), vec3(-0.3, 2.45, 5.0), 0.016, pole, hit);
+  capsule(origin, direction, vec3(0.3, 2.45, -5.2), vec3(0.3, 2.45, 5.0), 0.016, pole, hit);
+  for (int slot = 0; slot < 14; slot++) {
+    float z = -4.2 + float(slot) * 0.62;
+    if (z < zLow || z > zHigh) continue;
+    float seed = 100.0 + float(slot);
+    if (hash1(seed) >= standingShare) continue;
+    person(origin, direction, vec3((hash1(seed + 3.0) - 0.5) * 0.3, 1.85, z), true, seed, hit);
+  }
+  if (hit.distance < exit) {
+    float light = 0.5 + 0.5 * clamp(hit.normal.y * 0.5 + 0.5, 0.0, 1.0);
+    color = hit.color * ambient * light;
+  }
+  return color;
+}
+
+vec3 livery(vec3 albedo, vec3 p, vec3 n) {
+  if (n.y > 0.5) return roofColor;
+  bool band = abs(n.x) > 0.5 ? p.y > 1.32 && p.y < 2.74
+    : n.z > 0.5 ? p.y > 1.2 && p.y < 2.96
+    : n.z < -0.5 && p.y > 1.45 && p.y < 2.96;
+  return band ? bandColor : albedo;
+}
+
+float pillar(float z, float width) { return step(abs(fract((z - bendCut) / panePitch + 0.5) - 0.5) * panePitch, width); }
+
+int insertKind(vec3 local, vec3 p, vec3 n, float lift, float stretch, int slot) {
+  if (stretch > 0.0) {
+    if (abs(p.z - (bendCut - stretch * 0.5)) < 0.45) return 3;
+    if ((slot != bodySlot && slot != panelSlot) || abs(n.x) < 0.5 || p.y < 1.37 || p.y > 2.66) return 0;
+    return pillar(p.z, 0.05) > 0.0 ? 2 : 1;
+  }
+  float y = local.y - deckCut;
+  bool pane = y < lift - 0.12;
+  if (abs(n.y) > 0.5 || y < 0.22) return 0;
+  if (n.z > 0.5) return pane && abs(local.x) < 1.05 ? 1 : 2;
+  if (n.z < -0.5) return pane && abs(local.x) < 0.9 ? 1 : 2;
+  if (!pane) return 0;
+  return abs(n.x) > 0.9 && abs(local.z) < 5.75 && pillar(local.z, 0.07) == 0.0 ? 1 : 2;
+}
+
+vec3 operatorColor(int value) {
+  if (value == 1) return vec3(0.40, 0.14, 0.50);
+  if (value == 2) return vec3(0.78, 0.08, 0.10);
+  if (value == 3) return vec3(0.05, 0.40, 0.42);
+  return vec3(0.10, 0.35, 0.78);
+}
+
+vec3 ledSign(vec2 uv, vec2 grid, int row, float footprint) {
+  vec2 cell = clamp(uv, 0.0, 0.9999) * grid;
+  float lit = texelFetch(u_sign, ivec2(cell) + ivec2(0, row), 0).r;
+  vec2 size = vec2(textureSize(u_sign, 0));
+  float glow = texture(u_sign, (clamp(cell, vec2(0.5), grid - 0.5) + vec2(0, row)) / size).r;
+  float dotMask = 1.0 - smoothstep(0.3, 0.46, length(fract(cell) - 0.5));
+  float far = clamp((footprint - 0.25) / 0.4, 0.0, 1.0);
+  float on = mix(lit * dotMask, glow * 0.8, far);
+  float off = mix(dotMask, 0.55, far) * 0.05;
+  vec3 amber = vec3(1.0, 0.5, 0.04);
+  return amber * (on + off * (1.0 - on)) + amber * (0.15 * u_night) * glow + 0.008;
+}
+
+vec3 shade() {
+  int slot = int(v_uv.x * u_paletteCount);
+  float lift = u_variant.x, stretch = u_variant.y;
+  vec3 local = v_local;
+  vec3 p = vec3(local.x, local.y > deckCut + lift ? local.y - lift : local.y, local.z - stretch * 0.5);
+  bool inserted = (local.y > deckCut && local.y < deckCut + lift && !(local.z > 6.01 && local.y < 2.96))
+    || (stretch > 0.0 && p.z >= bendCut - stretch && p.z < bendCut);
+  if (p.z < bendCut - stretch) p.z += stretch;
+  vec3 n = normalize(v_localNormal);
+  float footprint = length(fwidth(p)) / signPitch;
+  bool signFace = slot == panelSlot || slot == signGlyphSlot;
+  bool glass = slot == windowSlot || slot == windowHighlightSlot;
+  if (signFace && p.z > 5.9 && abs(p.x) < 1.0 && p.y > 2.66 && p.y < 2.94) {
+    return ledSign(vec2((1.0 - p.x) / 2.0, (2.94 - p.y) / 0.28), vec2(112, 16), 0, footprint);
+  }
+  int insert = inserted ? insertKind(local, p, n, lift, stretch, slot) : 0;
+  vec3 cabinPoint = insert != 1 ? p : stretch > 0.0 ? vec3(local.x, local.y, p.z + stretch * 0.5) : local - vec3(0, lift, 0);
+  if ((glass || slot == panelSlot) && n.z < -0.5 && p.z < -5.9 && abs(p.x) < 0.56 && p.y > 2.1 && p.y < 2.38) {
+    return ledSign(vec2((p.x + 0.56) / 1.12, (2.38 - p.y) / 0.28), vec2(64, 16), 16, footprint);
+  }
+  if (glass && n.x < -0.5 && p.x < -1.2 && p.z > 3.04 && p.z < 3.88 && p.y > 2.3 && p.y < 2.58) {
+    return ledSign(vec2((3.88 - p.z) / 0.84, (2.58 - p.y) / 0.28), vec2(48, 16), 32, footprint);
+  }
+  vec3 albedo = texture(u_baseColor, v_uv).rgb;
+  float gloss = 1.0 - texture(u_roughness, v_uv).r;
+  if (slot == bodySlot) albedo = livery(albedo, p, n);
+  if (u_variant.z > 0.5 && (slot == bodySlot || slot == skirtSlot) && !inserted && abs(n.x) > 0.5) {
+    vec2 edge = abs(vec2(p.z - 2.25, p.y - 0.8)) - vec2(0.48, 0.12);
+    if (length(max(edge, 0.0)) + min(max(edge.x, edge.y), 0.0) < 0.06) {
+      albedo = abs(p.y - 0.74) < 0.022 ? vec3(0.92) : operatorColor(int(u_variant.z + 0.5));
+    }
+  }
+  if (insert == 1) glass = true;
+  else if (insert == 2) albedo = bandColor;
+  else if (insert == 3) { albedo = vec3(0.035) * (0.7 + 0.6 * step(0.5, fract(p.z * 7.0))); gloss = 0.1; }
+  if (all(equal(albedo, bandColor))) gloss *= 0.5;
+  vec3 normal = normalize(v_normal);
+  float daylight = 1.0 - u_night * 0.65;
+  float diffuse = max(dot(normal, u_light), 0.0) * daylight;
+  float sky = 0.5 + 0.5 * normal.y;
+  vec3 ambient = mix(vec3(0.32, 0.31, 0.30), vec3(0.62, 0.66, 0.72), sky) * daylight;
+  vec3 color = albedo * (ambient + diffuse * vec3(0.78, 0.75, 0.70));
+  color += gloss * gloss * sky * vec3(0.10, 0.12, 0.15) * daylight;
+  if (glass) {
+    vec3 direction = normalize(v_local - u_eye);
+    vec3 interior = cabin(cabinPoint, direction);
+    float facing = abs(dot(n, direction));
+    float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+    vec3 reflection = mix(vec3(0.58, 0.63, 0.70), vec3(0.05, 0.06, 0.08), u_night);
+    float tint = mix(0.75, 1.0, u_night);
+    float reflectance = mix(0.08 + fresnel * 0.45, fresnel * 0.4, u_night);
+    color = mix(interior * tint, reflection, reflectance);
+  } else if (slot == headlightSlot) {
+    color = mix(color, vec3(1.6, 1.55, 1.4), u_night);
+  } else if (slot == tailLightSlot) {
+    color = mix(color, vec3(1.4, 0.08, 0.05), u_night);
+  }
+  return color;
+}
+
+vec3 encode(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+}
+
+void main() {
+  if (u_occluded > 0.5) {
+    vec3 view = normalize(u_eye - v_local);
+    float rim = 1.0 - abs(dot(normalize(v_localNormal), view));
+    float alpha = u_outline.a * (0.18 + 0.82 * rim * rim);
+    fragColor = vec4(encode(u_outline.rgb) * alpha, alpha);
+    return;
+  }
+  fragColor = vec4(encode(shade()) * u_opacity, u_opacity);
+}`;
+
+const BUS_SHADOW_VERTEX = `#version 300 es
+precision highp float;
+uniform mat4 u_matrix, u_model;
+uniform vec4 u_variant;
+uniform vec3 u_light;
+out vec2 v_local;
+void main() {
+  vec2 corners[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));
+  vec2 corner = corners[gl_VertexID];
+  vec2 extent = vec2(2.3, 7.4 + u_variant.y * 0.5);
+  float scale = length(u_model[0].xyz);
+  vec4 world = u_model * vec4(corner.x * extent.x, 0.02, corner.y * extent.y, 1);
+  world.xz -= u_light.xz * (0.9 + u_variant.x * 0.3) * scale;
+  gl_Position = u_matrix * vec4(world.x, world.z, world.y, 1);
+  v_local = corner * extent;
+}`;
+
+const BUS_SHADOW_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec4 u_variant;
+uniform float u_shadowOpacity, u_night;
+in vec2 v_local;
+out vec4 fragColor;
+void main() {
+  vec2 body = vec2(1.25, 6.0 + u_variant.y * 0.5);
+  vec2 q = abs(v_local) - body;
+  float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+  float alpha = u_shadowOpacity * (1.0 - u_night * 0.6) * (1.0 - smoothstep(-0.6, 1.0, distance));
+  fragColor = vec4(0, 0, 0, alpha);
+}`;
+
+const BUS_KINDS = { single: { lift: 0, stretch: 0 }, double: { lift: 1.1, stretch: 0 } };
+const BUS_LIVERIES = { SBST: 1, SMRT: 2, TTS: 3, GAS: 4 };
+const BUS_OCCUPANCY = { "#00ab35": 0.3, "#ff9300": 0.68, "#de2121": 0.97 };
+const BUS_OUTLINE = [0.45, 0.82, 1.0, 0.6];
+
+const busScale = (zoom) => clamp(30 / (BUS_LENGTH * pixelsPerMeter(zoom)), 1, 4);
+
+// RouteBusSign.render: the front sign's destination and number, then the rear and side numbers,
+// as a 112 × 48 one-bit mask the shader reads as LED dots.
+function renderSign({ number, destination }) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 112;
+  canvas.height = 48;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, 112, 48);
+  context.fillStyle = "#fff";
+  context.textBaseline = "middle";
+  const draw = (text, font, x, y, width, alignment) => {
+    context.font = font;
+    const measured = context.measureText(text).width;
+    const scale = Math.min(1, width / Math.max(measured, 1));
+    context.save();
+    context.translate(x + (width - measured * scale) * alignment, y + 8.5);
+    context.scale(scale, 1);
+    context.fillText(text, 0, 0);
+    context.restore();
+    return measured * scale;
+  };
+  const heavy = "800 20px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
+  const condensed = (size) => `700 ${size}px "SF Compact Text", "Arial Narrow", -apple-system, system-ui, sans-serif`;
+  context.font = heavy;
+  const numberWidth = draw(number, heavy, 72, 0, 39, 1);
+  const space = 112 - numberWidth - 6;
+  const text = (destination || "").toUpperCase();
+  const words = text.split(" ");
+  context.font = condensed(12.5);
+  if (context.measureText(text).width * 0.85 <= space || words.length < 2) {
+    draw(text, condensed(12.5), 1, 0, space, 0);
+  } else {
+    let best = 1;
+    for (let i = 1; i < words.length; i++) {
+      if (Math.abs(words.slice(0, i).join(" ").length - words.slice(i).join(" ").length) < Math.abs(words.slice(0, best).join(" ").length - words.slice(best).join(" ").length)) best = i;
+    }
+    draw(words.slice(0, best).join(" "), condensed(8.5), 1, -4, space, 0);
+    draw(words.slice(best).join(" "), condensed(8.5), 1, 4, space, 0);
+  }
+  draw(number, heavy, 2, 16, 60, 0.5);
+  draw(number, heavy, 2, 32, 44, 0.5);
+  const pixels = context.getImageData(0, 0, 112, 48).data;
+  const mask = new Uint8Array(112 * 48);
+  for (let i = 0; i < mask.length; i++) mask[i] = pixels[i * 4] > 110 ? 255 : 0;
+  return mask;
+}
+
+function invert(m) {
+  const inv = new Float64Array(16);
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  return inv.map((v) => v / det);
+}
+
+const POLE_HEIGHT = 3.07;
+const CURB_OFFSET = 4;
+
 class SceneryLayer {
   constructor() {
     this.id = "scenery";
@@ -1064,12 +1555,16 @@ class SceneryLayer {
     this.wind = [0, 0];
     this.overcast = 0;
     this.dark = false;
+    this.stops = [];
+    this.buses = [];
+    this.signs = new Map();
   }
 
   get now() { return (performance.now() - this.epoch) / 1000; }
 
   onAdd(map, gl) {
     this.map = map;
+    this.gl = gl;
     const program = (vertex, fragment) => {
       const result = gl.createProgram();
       for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
@@ -1082,13 +1577,17 @@ class SceneryLayer {
       gl.linkProgram(result);
       if (!gl.getProgramParameter(result, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(result));
       const uniforms = {};
-      for (const name of ["u_matrix", "u_light", "u_focus", "u_options", "u_sky", "u_wind"]) uniforms[name] = gl.getUniformLocation(result, name);
+      for (let i = 0; i < gl.getProgramParameter(result, gl.ACTIVE_UNIFORMS); i++) {
+        const name = gl.getActiveUniform(result, i).name;
+        uniforms[name] = gl.getUniformLocation(result, name);
+      }
       return { program: result, uniforms };
     };
     this.scenery = program(SCENERY_VERTEX, SCENERY_FRAGMENT);
     this.cast = program(CAST_VERTEX, CAST_FRAGMENT);
-    this.instanceBuffer = gl.createBuffer();
-    const mesh = (builder) => {
+    this.busProgram = program(BUS_VERTEX, BUS_FRAGMENT);
+    this.busShadow = program(BUS_SHADOW_VERTEX, BUS_SHADOW_FRAGMENT);
+    const mesh = (builder, instances) => {
       const vao = gl.createVertexArray();
       gl.bindVertexArray(vao);
       gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -1097,7 +1596,7 @@ class SceneryLayer {
       gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 32, 0);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, 16);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+      gl.bindBuffer(gl.ARRAY_BUFFER, instances);
       for (const [location, offset] of [[2, 0], [3, 16]]) {
         gl.enableVertexAttribArray(location);
         gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 32, offset);
@@ -1108,14 +1607,71 @@ class SceneryLayer {
       gl.bindVertexArray(null);
       return { vao, count: builder.indices.length };
     };
-    this.tree = mesh(treeMesh());
-    this.shadow = mesh(treeShadowMesh());
-    this.gl = gl;
+    this.instanceBuffer = gl.createBuffer();
+    this.poleBuffer = gl.createBuffer();
+    this.shelterBuffer = gl.createBuffer();
+    this.tree = mesh(treeMesh(), this.instanceBuffer);
+    this.shadow = mesh(treeShadowMesh(), this.instanceBuffer);
+    this.pole = mesh(stopPoleMesh(), this.poleBuffer);
+    this.shelter = mesh(shelterMesh(), this.shelterBuffer);
+    this.empty = gl.createVertexArray();
+    this.loadBus();
     if (this.pending) this.upload(this.pending);
   }
 
+  async loadBus() {
+    const gl = this.gl;
+    const image = (url) => new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = reject;
+      element.src = url;
+    });
+    const [buffer, color, roughness] = await Promise.all([
+      fetch("data/bus.bin").then((response) => response.arrayBuffer()), image("images/bus-color.png"), image("images/bus-roughness.png"),
+    ]);
+    const header = new Uint32Array(buffer, 4, 2);
+    const [vertexCount, indexCount] = header;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(buffer, 12, vertexCount * 8), gl.STATIC_DRAW);
+    for (const [location, size, offset] of [[0, 3, 0], [1, 3, 12], [2, 2, 24]]) {
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, 32, offset);
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(buffer, 12 + vertexCount * 32, indexCount), gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    const texture = (source, format) => {
+      const result = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, result);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, format, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      for (const [key, value] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, key, value);
+      return result;
+    };
+    this.bus = { vao, count: indexCount, baseColor: texture(color, gl.SRGB8_ALPHA8), roughness: texture(roughness, gl.RGBA8), paletteCount: Math.max(1, color.width / 32) };
+    this.map.triggerRepaint();
+  }
+
+  signTexture(sign) {
+    const key = `${sign.number}|${sign.destination}`;
+    if (!this.signs.has(key)) {
+      const gl = this.gl;
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 112, 48, 0, gl.RED, gl.UNSIGNED_BYTE, renderSign(sign));
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      for (const [k, value] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, value);
+      this.signs.set(key, texture);
+    }
+    return this.signs.get(key);
+  }
+
   setTrees(anchor, trees, births) {
-    this.anchor = anchor;
+    this.treeAnchor = anchor;
     const now = this.now;
     const data = new Float32Array(trees.length * 8);
     trees.forEach((tree, i) => {
@@ -1136,44 +1692,157 @@ class SceneryLayer {
     this.map.triggerRepaint();
   }
 
+  local(lngLat) {
+    const point = maplibregl.MercatorCoordinate.fromLngLat(lngLat);
+    const scale = this.anchor.meterInMercatorCoordinateUnits();
+    return [(point.x - this.anchor.x) / scale, (point.y - this.anchor.y) / scale];
+  }
+
+  // RouteStopLayer: each stop's pole sits on the kerb to the left of the traffic, scaled up
+  // when zoomed out, with its shelter set back behind it.
+  stopInstances(zoom) {
+    const ppm = pixelsPerMeter(zoom);
+    const scale = Math.max(1, 14 / (POLE_HEIGHT * ppm));
+    const across = Math.max(CURB_OFFSET, Math.min(CURB_OFFSET * scale, 7 / ppm));
+    const poles = new Float32Array(this.stops.length * 8), shelters = new Float32Array(this.stops.length * 8);
+    this.stops.forEach((stop, i) => {
+      const [x, z] = this.local(stop.lngLat);
+      const h = (stop.heading * Math.PI) / 180;
+      const forward = [Math.sin(h), -Math.cos(h)], left = [-Math.cos(h), -Math.sin(h)];
+      poles.set([x + left[0] * across, -10, z + left[1] * across, h, 1, 1, POLE_HEIGHT, 0.28], i * 8);
+      const back = across + 2.4;
+      shelters.set([x + left[0] * back - forward[0] * 4, -10, z + left[1] * back - forward[1] * 4, h + Math.PI / 2, 1, 0, 1, 0], i * 8);
+    });
+    return { poles, shelters, scale };
+  }
+
   render(gl, options) {
     const zoom = this.map.getZoom();
     const grow = clamp((zoom - 14.6) / (15.2 - 14.6), 0, 1);
-    if (!this.count || !this.anchor || grow <= 0) return;
-    const scale = this.anchor.meterInMercatorCoordinateUnits();
-    const local = [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, this.anchor.x, this.anchor.y, 0, 1];
-    const matrix = multiply(options.defaultProjectionData.mainMatrix, local);
+    if (!this.anchor || grow <= 0) return;
+    const frame = (anchor) => {
+      const scale = anchor.meterInMercatorCoordinateUnits();
+      return multiply(options.defaultProjectionData.mainMatrix, [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, anchor.x, anchor.y, 0, 1]);
+    };
+    const matrix = frame(this.anchor);
+    const treeMatrix = this.treeAnchor ? frame(this.treeAnchor) : matrix;
     const now = this.now;
     const sun = this.dark ? NIGHT_SUN : DAY_SUN;
-    const setUniforms = ({ program, uniforms }) => {
+    const night = this.dark ? 1 : 0;
+    const setUniforms = ({ program, uniforms }, visibility, fadeStart, fadeEnd, target = matrix) => {
       gl.useProgram(program);
-      gl.uniformMatrix4fv(uniforms.u_matrix, false, matrix);
-      gl.uniform4f(uniforms.u_light, sun[0], sun[1], sun[2], this.dark ? 1 : 0);
-      gl.uniform4f(uniforms.u_focus, 0, 0, 0, SCENERY_RADIUS - SCENERY_FADE);
-      gl.uniform4f(uniforms.u_options, SCENERY_RADIUS, 1, grow, now);
+      gl.uniformMatrix4fv(uniforms.u_matrix, false, target);
+      gl.uniform4f(uniforms.u_light, sun[0], sun[1], sun[2], night);
+      gl.uniform4f(uniforms.u_focus, 0, 0, 0, fadeStart);
+      gl.uniform4f(uniforms.u_options, fadeEnd, 1, visibility, now);
       gl.uniform4f(uniforms.u_sky, 1, 1, 1, 0);
       gl.uniform4f(uniforms.u_wind, this.wind[0], this.wind[1], 0, this.overcast);
     };
+    const instanced = (target, count) => {
+      gl.bindVertexArray(target.vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, target.count, gl.UNSIGNED_SHORT, 0, count);
+    };
+    const { poles, shelters } = this.stopInstances(zoom);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.poleBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, poles, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.shelterBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, shelters, gl.DYNAMIC_DRAW);
+    const stops = this.stops.length;
+
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.STENCIL_TEST);
     gl.enable(gl.DEPTH_TEST);
 
-    setUniforms(this.cast);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthFunc(gl.LESS);
     gl.depthMask(true);
-    gl.bindVertexArray(this.shadow.vao);
-    gl.drawElementsInstanced(gl.TRIANGLES, this.shadow.count, gl.UNSIGNED_SHORT, 0, this.count);
+    setUniforms(this.cast, grow, SCENERY_RADIUS - SCENERY_FADE, SCENERY_RADIUS, treeMatrix);
+    if (this.count) instanced(this.shadow, this.count);
+    setUniforms(this.cast, 1, 1e9, 2e9);
+    if (stops) instanced(this.pole, stops);
+    setUniforms(this.cast, grow, 1e9, 2e9);
+    if (stops) instanced(this.shelter, stops);
 
-    setUniforms(this.scenery);
     gl.disable(gl.BLEND);
     gl.depthFunc(gl.LEQUAL);
-    gl.bindVertexArray(this.tree.vao);
-    gl.drawElementsInstanced(gl.TRIANGLES, this.tree.count, gl.UNSIGNED_SHORT, 0, this.count);
+    setUniforms(this.scenery, grow, SCENERY_RADIUS - SCENERY_FADE, SCENERY_RADIUS, treeMatrix);
+    if (this.count) instanced(this.tree, this.count);
+    setUniforms(this.scenery, 1, 1e9, 2e9);
+    if (stops) instanced(this.pole, stops);
+    setUniforms(this.scenery, grow, 1e9, 2e9);
+    if (stops) instanced(this.shelter, stops);
+
+    if (this.bus) this.renderBuses(gl, matrix, sun, night, zoom);
     gl.bindVertexArray(null);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
 
     if (now - this.latestBirth < 1.5 || Math.hypot(...this.wind) > 3) this.map.triggerRepaint();
+  }
+
+  renderBuses(gl, matrix, sun, night, zoom) {
+    const size = busScale(zoom);
+    const swizzle = [1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1];
+    for (const bus of this.buses) {
+      const opacity = bus.opacity * clamp((zoom - 14) / 0.5, 0, 1);
+      if (opacity < 0.01 || bus.state === "gone" && bus.opacity <= 0) continue;
+      const heading = bus.route.heading(bus.distance);
+      const h = (heading * Math.PI) / 180;
+      const [px, py] = bus.position;
+      const [x, z] = this.local(toLngLat([px - Math.cos(h) * 1.6, py - Math.sin(h) * 1.6]));
+      const angle = Math.PI - h;
+      const c = Math.cos(angle) * size, s = Math.sin(angle) * size;
+      const model = [-c, 0, s, 0, 0, size, 0, 0, s, 0, c, 0, x, 0, z, 1];
+      const eyeMatrix = invert(multiply(multiply(matrix, swizzle), model));
+      const eyePoint = [0, 1, 2, 3].map((row) => eyeMatrix[8 + row]);
+      const eye = Math.abs(eyePoint[3]) > 1e-12 ? eyePoint.slice(0, 3).map((v) => v / eyePoint[3]) : [0, 1000, 0];
+      const kind = BUS_KINDS[bus.kind];
+      const livery = BUS_LIVERIES[Object.keys(OPERATORS).find((key) => OPERATORS[key] === bus.route.operator)] ?? 0;
+
+      const shadow = this.busShadow;
+      gl.useProgram(shadow.program);
+      gl.uniformMatrix4fv(shadow.uniforms.u_matrix, false, matrix);
+      gl.uniformMatrix4fv(shadow.uniforms.u_model, false, model);
+      gl.uniform4f(shadow.uniforms.u_variant, kind.lift, kind.stretch, livery, 0);
+      gl.uniform3f(shadow.uniforms.u_light, sun[0], sun[1], sun[2]);
+      gl.uniform1f(shadow.uniforms.u_shadowOpacity, 0.32 * opacity);
+      gl.uniform1f(shadow.uniforms.u_night, night);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthFunc(gl.LEQUAL);
+      gl.depthMask(false);
+      gl.bindVertexArray(this.empty);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      const program = this.busProgram, u = program.uniforms;
+      gl.useProgram(program.program);
+      gl.uniformMatrix4fv(u.u_matrix, false, matrix);
+      gl.uniformMatrix4fv(u.u_model, false, model);
+      gl.uniform4f(u.u_variant, kind.lift, kind.stretch, livery, 0);
+      gl.uniform1f(u.u_paletteCount, this.bus.paletteCount);
+      gl.uniform3f(u.u_light, sun[0], sun[1], sun[2]);
+      gl.uniform3f(u.u_eye, eye[0], eye[1], eye[2]);
+      gl.uniform4f(u.u_outline, BUS_OUTLINE[0], BUS_OUTLINE[1], BUS_OUTLINE[2], BUS_OUTLINE[3] * opacity);
+      gl.uniform1f(u.u_occupancy, BUS_OCCUPANCY[bus.load.color] ?? 0.5);
+      gl.uniform1f(u.u_night, night);
+      gl.uniform1f(u.u_opacity, opacity);
+      for (const [unit, texture, name] of [[0, this.bus.baseColor, "u_baseColor"], [1, this.bus.roughness, "u_roughness"], [2, this.signTexture(bus.sign), "u_sign"]]) {
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(u[name], unit);
+      }
+      gl.bindVertexArray(this.bus.vao);
+      gl.uniform1f(u.u_occluded, 1);
+      gl.depthFunc(gl.GREATER);
+      gl.drawElements(gl.TRIANGLES, this.bus.count, gl.UNSIGNED_SHORT, 0);
+      gl.uniform1f(u.u_occluded, 0);
+      gl.depthFunc(gl.LEQUAL);
+      gl.depthMask(true);
+      if (opacity >= 1) gl.disable(gl.BLEND);
+      gl.drawElements(gl.TRIANGLES, this.bus.count, gl.UNSIGNED_SHORT, 0);
+    }
+    gl.activeTexture(gl.TEXTURE0);
   }
 }
 
@@ -1236,6 +1905,18 @@ function updateScenery() {
   if (state.births.size > before) scenery.latestBirth = scenery.now;
 }
 
+function syncScenery() {
+  const layer = state.scenery;
+  if (!layer || !state.stop) return;
+  layer.anchor = maplibregl.MercatorCoordinate.fromLngLat(state.stop.lngLat);
+  layer.buses = state.buses;
+  layer.stops = state.area.stops.map((stop) => {
+    const entry = stop.services.find((service) => service.line);
+    return { lngLat: stop.lngLat, heading: entry ? new Route(entry).heading(entry.stopAt) : 0 };
+  });
+  state.map.triggerRepaint();
+}
+
 function addScenery() {
   state.scenery = new SceneryLayer();
   state.scenery.dark = state.dark;
@@ -1246,6 +1927,7 @@ function addScenery() {
   state.map.addLayer(state.scenery, layers[above + 1]?.id);
   state.sceneryKey = null;
   state.sceneryDirty = true;
+  syncScenery();
 }
 
 function applySkyToScenery() {
@@ -1277,14 +1959,13 @@ function chooseSky(except) {
   return SKIES[pick(RANDOM_SKIES.filter((key) => SKIES[key] !== except))];
 }
 
-const BUS_GLYPH = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="14" rx="3" fill="none" stroke="#fff" stroke-width="2"/><path d="M5.5 11h13" stroke="#fff" stroke-width="2"/><circle cx="8.5" cy="14.3" r="1.1" fill="#fff"/><circle cx="15.5" cy="14.3" r="1.1" fill="#fff"/><path d="M7.5 17.5v2.5M16.5 17.5v2.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>`;
 
 function pinElement(stop) {
   const element = document.createElement("button");
   element.type = "button";
   element.className = "pin";
   element.setAttribute("aria-label", stop.name);
-  element.innerHTML = `<span class="square">${BUS_GLYPH}</span><span class="label"><span class="dot">${BUS_GLYPH}</span><span class="name"></span></span>`;
+  element.innerHTML = `<img class="square" src="images/stop-compact.png" alt="" width="37" height="37"><span class="label"><span class="dot"></span><span class="name"></span></span>`;
   element.querySelector(".name").textContent = stop.name;
   element.addEventListener("click", () => {
     if (stop !== state.stop) showStop(state.area, stop, true);
@@ -1323,6 +2004,7 @@ function showStop(area, stop, fly) {
     return new Bus(state.map, route, lane % 3, (index + 0.2 + Math.random() * 0.6) / simulated.length);
   });
   state.buses.forEach((bus) => bus.add());
+  syncScenery();
   buildPanel(stop);
 
   state.sceneryDirty = true;
@@ -1435,13 +2117,10 @@ function setSky(sky) {
 
 function updateBusSize() {
   const zoom = state.map.getZoom();
-  const floor = 34 * clamp((zoom - 13) / 2.5, 0.35, 1);
-  const pixels = Math.max(BUS_LENGTH * pixelsPerMeter(zoom), floor);
-  document.documentElement.style.setProperty("--bus-l", `${pixels.toFixed(1)}px`);
-  document.documentElement.style.setProperty("--bus-w", `${(pixels * 0.27).toFixed(1)}px`);
   document.documentElement.classList.toggle("far", zoom < 14.5);
-  const reach = pixels * 0.36;
-  for (const bus of state.buses) bus.bubbleMarker.setOffset([reach * 0.4 + 4, -reach * 0.9 - 4]);
+  const pixels = pixelsPerMeter(zoom) * busScale(zoom);
+  const rise = 4 * pixels * Math.sin((state.map.getPitch() * Math.PI) / 180);
+  for (const bus of state.buses) bus.bubbleMarker.setOffset([4, -rise - 8]);
 }
 
 function updateCrowding() {
@@ -1516,6 +2195,7 @@ async function start() {
 
   showStop(area, stop, false);
   map.on("zoom", updateBusSize);
+  map.on("pitch", updateBusSize);
   map.on("sourcedata", (event) => {
     if (event.sourceId === "openmaptiles" && event.isSourceLoaded) state.sceneryDirty = true;
   });
@@ -1550,6 +2230,7 @@ async function start() {
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
     for (const bus of state.buses) bus.step(dt, state.buses);
+    state.map.triggerRepaint();
     if (++frame % 6 === 0) updateCrowding();
     if (frame % 30 === 0) updatePanel();
     state.weather.step(now, dt);
