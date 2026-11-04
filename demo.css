@@ -69,7 +69,7 @@ button { font: inherit; color: inherit; }
 .stop span { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stop code { font: 17px var(--mono); color: var(--muted); }
 .stop i { font-style: normal; }
-#shuffle {
+#locate, #shuffle {
   flex: none;
   display: grid; place-items: center;
   width: 40px; height: 40px;
@@ -78,8 +78,10 @@ button { font: inherit; color: inherit; }
   color: var(--tint);
   cursor: pointer;
 }
-#shuffle:hover { filter: brightness(1.08); }
-#shuffle:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+#locate:hover, #shuffle:hover { filter: brightness(1.08); }
+#locate:focus-visible, #shuffle:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+#locate.busy svg { animation: locating 1s ease-in-out infinite; }
+@keyframes locating { 50% { opacity: 0.35; } }
 
 .timeline { margin: 18px 4px 0; }
 .track { position: relative; height: 60px; }
@@ -104,14 +106,10 @@ button { font: inherit; color: inherit; }
 
 .cta { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 0.5px solid var(--hairline); }
 .cta h2 { margin: 0; font: 600 15px/1.2 var(--text); color: var(--muted); }
-.soon {
-  display: flex; flex-direction: column; justify-content: center;
-  box-sizing: border-box; width: 150px; height: 50px; margin: 0; padding: 0 14px;
-  border: 1px solid #a6a6a6; border-radius: 10px;
-  background: #000; color: #fff; text-align: center;
-}
-.soon small { font: 500 11px/1.1 var(--text); letter-spacing: 0.01em; }
-.soon b { font: 600 20px/1.1 var(--text); letter-spacing: -0.02em; }
+.download { display: block; line-height: 0; border-radius: 10px; transition: transform 0.15s ease; }
+.download img { display: block; width: 150px; height: 50px; }
+.download:hover { transform: translateY(-1px); }
+.download:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; }
 .credit { display: flex; justify-content: center; gap: 6px; margin: 9px 0 0; font-size: 12px; color: var(--muted); }
 .credit a { color: var(--muted); text-decoration: none; }
 .credit a:hover { color: var(--fg); }
