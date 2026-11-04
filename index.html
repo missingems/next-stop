@@ -1,31 +1,63 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-SG">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Next Stop – Support</title>
-<link rel="stylesheet" href="style.css">
-<link rel="icon" href="icon.png">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Check live Singapore bus arrivals and see your bus on the map with NextStop.">
+  <meta name="apple-itunes-app" content="app-id=1487419506">
+  <meta name="theme-color" content="#f8f6ef">
+  <link rel="icon" href="./assets/icon.png">
+  <link rel="stylesheet" href="./styles.css">
+  <title>NextStop — Live Singapore bus arrivals</title>
 </head>
 <body>
-<main>
-<header><img src="icon.png" alt=""><div><h1>Next Stop</h1><div class="muted">Live Singapore bus arrivals on a 3D map</div></div></header>
-
-<p>Next Stop shows every bus arriving at the stops around you, glides each bus along its real route on a 3D map of Singapore, and keeps your bus on the Lock Screen while you wait or ride.</p>
-
-<h2>Get help</h2>
-<div class="card">
-<p>Found a problem or have an idea? <a href="https://github.com/missingems/next-stop/issues/new">Open an issue</a> and include the bus stop code and service number if it's about a specific bus. We read every report.</p>
-</div>
-
-<h2>Common questions</h2>
-<div class="card">
-<p><strong>Why are no buses showing?</strong><br>Next Stop uses live data from the Land Transport Authority. Buses don't run late at night, and arrival times disappear when a service has ended for the day. Outside Singapore, pan the map to Singapore to see stops.</p>
-<p><strong>What does Next Stop Pro include?</strong><br>Live Activities on the Lock Screen and in the Dynamic Island, drop-off alerts before your stop, live rain and cloud on the map, and unlimited Bus Uncle. Without Pro, Bus Uncle is free for an hour a day.</p>
-<p><strong>How do I cancel or restore Pro?</strong><br>Manage or cancel your subscription in Settings › Apple Account › Subscriptions. To restore it on a new device, open Settings in Next Stop and tap Become a Pro Commuter, then Restore Purchases.</p>
-</div>
-
-<nav><a href="privacy.html">Privacy Policy</a><a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/">Terms of Use</a></nav>
-</main>
+  <header class="shell site-header">
+    <a class="brand" href="./" aria-label="NextStop home">
+      <img src="./assets/icon.png" width="38" height="38" alt="">
+      <span>NextStop<span class="brand-city">Singapore</span></span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="./support/">Support</a>
+      <a class="header-download" href="https://apps.apple.com/sg/app/nextstop-singapore/id1487419506">App Store <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero shell" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="stop-dot"></span> Singapore bus arrivals</div>
+        <h1 id="hero-title">See when your<br>bus is <em>coming.</em></h1>
+        <p class="intro">Check the next arrivals at your stop, see how crowded the bus is and follow it on the map while you wait.</p>
+        <a class="button" href="https://apps.apple.com/sg/app/nextstop-singapore/id1487419506">Download on the App Store <span aria-hidden="true">↗</span></a>
+        <p class="platforms">iPhone <span>·</span> iPad <span>·</span> Apple Watch</p>
+      </div>
+      <figure class="hero-art">
+        <svg class="routes" viewBox="0 0 600 565" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <path d="M-30 192H97l104 104h173l92-92h178M-30 379H74l92 92h245l83-83h149" fill="none" stroke="#e5a159" stroke-width="4"/>
+          <path d="M117-25v166l94 94h183l130 130v235M406-18v135l-74 74v146L189 480v115" fill="none" stroke="#e8bd8a" stroke-width="3"/>
+          <g fill="#fce3c0" stroke="#ce7138" stroke-width="3"><circle cx="97" cy="192" r="7"/><circle cx="74" cy="379" r="7"/><circle cx="466" cy="204" r="7"/><circle cx="494" cy="388" r="7"/><circle cx="189" cy="480" r="7"/></g>
+        </svg>
+        <img class="phone phone-secondary" src="./assets/buses.webp" width="620" height="1348" alt="3.0 preview showing a 3D bus approaching the Opp Bugis Station stop">
+        <img class="phone phone-primary" src="./assets/arrivals.webp" width="620" height="1348" alt="3.0 preview showing live arrival estimates at Opp Bugis Station Exit C">
+        <figcaption>NextStop 3.0 preview</figcaption>
+      </figure>
+    </section>
+    <section class="release shell" aria-labelledby="release-title">
+      <div>
+        <div class="eyebrow"><span class="stop-dot"></span> A look at version 3.0</div>
+        <h2 id="release-title">From the stop to the Lock Screen.</h2>
+        <img class="activity-preview" src="./assets/live-activity.webp" width="620" height="1348" alt="NextStop bus arrival shown as an iPhone Live Activity" loading="lazy">
+      </div>
+      <ol class="feature-list">
+        <li><span class="route-number" aria-hidden="true">01</span><div><h3>Follow buses in 3D</h3><p>See buses move through the city and explore the stops along each route.</p></div></li>
+        <li><span class="route-number" aria-hidden="true">02</span><div><h3>See the weather on the map</h3><p>Check rain, clouds and thunderstorms before heading to the stop.</p></div></li>
+        <li><span class="route-number" aria-hidden="true">03</span><div><h3>Glance at your arrival</h3><p>Keep an arrival estimate in view on your Lock Screen or in the Dynamic Island with Live Activities.</p></div></li>
+        <li><span class="route-number" aria-hidden="true">04</span><div><h3>Take a turn as Bus Uncle</h3><p>Pick a real Singapore bus route and let the simulated bus drive while you focus.</p></div></li>
+      </ol>
+    </section>
+  </main>
+  <footer class="shell site-footer">
+    <p>NextStop · Bus arrival estimates from LTA DataMall</p>
+    <nav aria-label="Footer navigation"><a href="./support/">Support</a><a href="./privacy.html">Privacy</a></nav>
+  </footer>
 </body>
 </html>
