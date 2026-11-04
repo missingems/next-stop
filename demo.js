@@ -638,7 +638,7 @@ class Bus {
     this.marker = new maplibregl.Marker({ element: this.element, rotationAlignment: "map", pitchAlignment: "map" });
     this.bubbleElement = document.createElement("div");
     this.bubbleElement.className = "bubble-anchor";
-    this.bubbleElement.innerHTML = `<div class="bubble glass">${TAIL_SVG}<span class="plate" style="background:${route.operator}">${route.service}</span><span class="chip"></span></div>`;
+    this.bubbleElement.innerHTML = `<div class="bubble">${TAIL_SVG}<span class="plate" style="background:${route.operator}">${route.service}</span><span class="chip"></span></div>`;
     this.bubble = this.bubbleElement.firstElementChild;
     this.chip = this.bubble.querySelector(".chip");
     this.bubbleMarker = new maplibregl.Marker({ element: this.bubbleElement, anchor: "bottom-left" });
@@ -752,7 +752,7 @@ class Bus {
 // The scene: one random stop in one area, its buses and its arrivals panel, plus the weather.
 
 const MAX_BUSES = 7;
-const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], stopMarker: null, dark: false, sky: null };
+const state = { map: null, weather: null, style: null, areas: [], area: null, stop: null, buses: [], rows: [], pins: [], youMarker: null, dark: false, sky: null };
 
 function chooseArea(except) {
   const requested = state.areas.find((area) => area.key === params.get("area") || area.stops.some((stop) => stop.code === params.get("stop")));
@@ -771,22 +771,37 @@ function chooseSky(except) {
   return SKIES[pick(RANDOM_SKIES.filter((key) => SKIES[key] !== except))];
 }
 
-function stopElement(name) {
+const BUS_GLYPH = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="14" rx="3" fill="none" stroke="#fff" stroke-width="2"/><path d="M5.5 11h13" stroke="#fff" stroke-width="2"/><circle cx="8.5" cy="14.3" r="1.1" fill="#fff"/><circle cx="15.5" cy="14.3" r="1.1" fill="#fff"/><path d="M7.5 17.5v2.5M16.5 17.5v2.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>`;
+
+function pinElement(stop) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "pin";
+  element.setAttribute("aria-label", stop.name);
+  element.innerHTML = `<span class="square">${BUS_GLYPH}</span><span class="label"><span class="dot">${BUS_GLYPH}</span><span class="name"></span></span>`;
+  element.querySelector(".name").textContent = stop.name;
+  element.addEventListener("click", () => {
+    if (stop !== state.stop) showStop(state.area, stop, true);
+  });
+  return element;
+}
+
+function youElement() {
   const element = document.createElement("div");
-  element.className = "stop";
-  element.innerHTML = `<div class="disc"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="5" y="3.5" width="14" height="14" rx="3" fill="none" stroke="#fff" stroke-width="2"/><path d="M5.5 11h13" stroke="#fff" stroke-width="2"/><circle cx="8.5" cy="14.3" r="1.1" fill="#fff"/><circle cx="15.5" cy="14.3" r="1.1" fill="#fff"/><path d="M7.5 17.5v2.5M16.5 17.5v2.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div><div class="name"></div>`;
-  element.querySelector(".name").textContent = name;
+  element.className = "you";
+  element.innerHTML = `<span class="hint">You're here</span><span class="dot"></span>`;
   return element;
 }
 
 function sheetInsets() {
   const sheet = document.querySelector(".sheet").getBoundingClientRect();
   return innerWidth >= 768
-    ? { top: 40, bottom: 40, left: sheet.right + 24, right: 40 }
-    : { top: 40, bottom: innerHeight - sheet.top + 16, left: 24, right: 24 };
+    ? { top: 60, bottom: 60, left: sheet.right + 40, right: 90 }
+    : { top: 70, bottom: innerHeight - sheet.top + 30, left: 30, right: 70 };
 }
 
 function showStop(area, stop, fly) {
+  const sameArea = state.area === area;
   state.area = area;
   state.stop = stop;
   for (const bus of state.buses) bus.remove();
@@ -802,32 +817,54 @@ function showStop(area, stop, fly) {
     return new Bus(state.map, route, lane % 3, (index + 0.2 + Math.random() * 0.6) / simulated.length);
   });
   state.buses.forEach((bus) => bus.add());
-  buildPanel(stop);
+  buildPanel(area, stop);
 
-  state.stopMarker?.remove();
-  state.stopMarker = new maplibregl.Marker({ element: stopElement(stop.name), anchor: "top", offset: [0, -17] }).setLngLat(stop.lngLat).addTo(state.map);
+  if (!sameArea || !state.pins.length) {
+    state.pins.forEach((pin) => pin.marker.remove());
+    state.pins = area.stops.map((other) => {
+      const marker = new maplibregl.Marker({ element: pinElement(other), anchor: "center" }).setLngLat(other.lngLat).addTo(state.map);
+      return { stop: other, marker };
+    });
+    state.youMarker?.remove();
+    const [sx, sy] = toLocal(stop.lngLat);
+    state.youMarker = new maplibregl.Marker({ element: youElement(), anchor: "bottom", offset: [0, 11] }).setLngLat(toLngLat([sx - 95, sy + 45])).addTo(state.map);
+  }
+  for (const pin of state.pins) pin.marker.getElement().classList.toggle("selected", pin.stop === stop);
 
-  document.getElementById("place").textContent = area.name;
   const camera = {
     center: stop.lngLat,
-    zoom: innerWidth < 768 ? 16.3 : 16.7,
-    pitch: 35,
-    bearing: Math.round(Math.random() * 50 - 25),
+    zoom: innerWidth < 768 ? 16.6 : 17,
+    pitch: 20,
+    bearing: sameArea ? state.map.getBearing() : Math.round(Math.random() * 40 - 20),
     padding: sheetInsets(),
   };
-  if (fly && !reduceMotion) state.map.flyTo({ ...camera, duration: 2600, essential: false });
+  if (fly && !reduceMotion) state.map.flyTo({ ...camera, duration: sameArea ? 1200 : 2600, essential: false });
   else state.map.jumpTo(camera);
   updateBusSize();
 }
 
-// The panel: the app's stop sheet, with each service's next three buses.
+// The sheet: the app's Nearby sheet, with stop chips and each service's next three buses.
 
 const SLOT_HTML = `<div class="slot"><span class="box"></span><span class="load"><i></i><i></i></span></div>`;
+const ARROW_SVG = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-function buildPanel(stop) {
-  document.getElementById("stop-name").textContent = stop.name;
-  document.getElementById("stop-code").textContent = stop.code;
-  document.getElementById("stop-road").textContent = stop.road;
+function buildPanel(area, stop) {
+  const chips = document.getElementById("chips");
+  chips.replaceChildren(...[stop, ...area.stops.filter((other) => other !== stop)].map((other) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = other === stop ? "chip-stop selected" : "chip-stop";
+    chip.innerHTML = `<b></b><span><code></code> <i></i></span>`;
+    chip.querySelector("b").textContent = other.name;
+    chip.querySelector("code").textContent = other.code;
+    chip.querySelector("i").textContent = other.road;
+    chip.addEventListener("click", () => {
+      if (other !== state.stop) showStop(state.area, other, true);
+    });
+    return chip;
+  }));
+  chips.scrollLeft = 0;
+
   document.getElementById("service-count").textContent = `${stop.services.length} Services`;
   const list = document.getElementById("rows");
   list.replaceChildren();
@@ -835,8 +872,10 @@ function buildPanel(stop) {
   state.rows = stop.services.map((entry) => {
     const item = document.createElement("li");
     item.className = "row";
-    item.innerHTML = `<div class="service"><b></b><span><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><em></em></span></div><div class="times">${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}</div>`;
-    item.querySelector("b").textContent = entry.service;
+    item.innerHTML = `<div class="service"><b class="number"></b><span>${ARROW_SVG}<em></em></span></div><div class="times">${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}<span class="gap">〈</span>${SLOT_HTML}</div>`;
+    const number = item.querySelector(".number");
+    number.textContent = entry.service;
+    number.style.background = OPERATORS[entry.operator] ?? OPERATORS.GAS;
     item.querySelector("em").textContent = entry.destination;
     list.append(item);
     const decks = Math.random() < 0.45 ? 2 : 1;
@@ -855,6 +894,7 @@ function buildPanel(stop) {
       texts: [],
     };
   });
+  document.querySelector(".scroll").scrollTop = 0;
   updatePanel();
 }
 
@@ -879,15 +919,25 @@ function updatePanel() {
       if (row.texts[index] !== text) {
         row.texts[index] = text;
         slot.textContent = text;
+        slot.classList.toggle("arriving", text === "Arr");
       }
     });
   }
 }
 
-function setSky(sky) {
+let toastTimer;
+function toast(message) {
+  const element = document.getElementById("toast");
+  element.textContent = message;
+  element.classList.add("shown");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => element.classList.remove("shown"), 2600);
+}
+
+function setSky(sky, announce) {
   state.sky = sky;
-  document.getElementById("sky").textContent = sky.title;
   state.weather.set(sky, state.dark);
+  if (announce) toast(sky.title);
 }
 
 function updateBusSize() {
@@ -953,7 +1003,7 @@ async function start() {
     style: themedStyle(style, state.dark),
     center: stop.lngLat,
     zoom: 16,
-    pitch: 35,
+    pitch: 20,
     maxBounds: [[SINGAPORE[0][0] - 0.1, SINGAPORE[0][1] - 0.1], [SINGAPORE[1][0] + 0.1, SINGAPORE[1][1] + 0.1]],
     maxZoom: 19.5,
     minZoom: 11,
@@ -972,10 +1022,19 @@ async function start() {
     setSky(chooseSky());
   });
 
-  document.getElementById("shuffle").addEventListener("click", () => {
+  document.getElementById("search").addEventListener("click", () => {
     const next = chooseArea(state.area);
     showStop(next, chooseStop(next, false), true);
-    setSky(chooseSky(state.sky));
+    setSky(chooseSky(state.sky), true);
+  });
+  document.getElementById("weather-button").addEventListener("click", () => {
+    const keys = ["clear", ...RANDOM_SKIES];
+    const index = keys.findIndex((key) => SKIES[key] === state.sky);
+    setSky(SKIES[keys[(index + 1) % keys.length]], true);
+  });
+  document.getElementById("drive").addEventListener("click", () => toast("Drive along with your bus in the app"));
+  document.getElementById("locate").addEventListener("click", () => {
+    state.map.easeTo({ center: state.stop.lngLat, zoom: innerWidth < 768 ? 16.6 : 17, pitch: 20, padding: sheetInsets(), duration: reduceMotion ? 0 : 900 });
   });
   if (!theme) darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
   addEventListener("resize", () => {
