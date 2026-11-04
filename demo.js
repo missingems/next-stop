@@ -2041,24 +2041,34 @@ async function updateSky(stop) {
   if (sky && state.stop === stop && state.weather.ready) setSky(sky);
 }
 
-// The visitor's location: open the nearest stop when they are in Singapore and allow it.
+// The visitor's location: the locate button opens the nearest stop when they are in Singapore,
+// and a visit that already has permission opens there straight away.
 
 const HERE_REACH = 1200;
 
-function locate() {
-  if (params.has("area") || params.has("stop") || !navigator.geolocation) return;
+function locate(button) {
+  if (!navigator.geolocation) return;
   const initial = state.stop;
+  button?.classList.add("busy");
   navigator.geolocation.getCurrentPosition(({ coords }) => {
+    button?.classList.remove("busy");
     const here = [coords.longitude, coords.latitude];
     const inside = here[0] >= SINGAPORE[0][0] && here[0] <= SINGAPORE[1][0] && here[1] >= SINGAPORE[0][1] && here[1] <= SINGAPORE[1][1];
     if (!inside) return;
     state.here = here;
-    if (state.stop !== initial) return;
+    if (!button && state.stop !== initial) return;
     const [area, stop] = state.areas
       .flatMap((area) => area.stops.map((stop) => [area, stop]))
       .reduce((best, next) => (distance(here, next[1].lngLat) < distance(here, best[1].lngLat) ? next : best));
     showStop(area, stop, true);
-  }, () => {}, { timeout: 15_000, maximumAge: 10 * 60_000 });
+  }, () => button?.classList.remove("busy"), { timeout: 15_000, maximumAge: 10 * 60_000 });
+}
+
+function locateIfAllowed() {
+  if (params.has("area") || params.has("stop") || !navigator.permissions) return;
+  navigator.permissions.query({ name: "geolocation" }).then((status) => {
+    if (status.state === "granted") locate();
+  }, () => {});
 }
 
 
@@ -2335,6 +2345,8 @@ async function start() {
     updateSky(state.stop);
   });
 
+  const locateButton = document.getElementById("locate");
+  locateButton.addEventListener("click", () => locate(locateButton));
   document.getElementById("shuffle").addEventListener("click", () => {
     const stops = state.areas.flatMap((area) => area.stops.map((stop) => [area, stop])).filter(([, stop]) => stop !== state.stop);
     const [next, stop] = pick(stops);
@@ -2360,7 +2372,7 @@ async function start() {
     state.weather.step(now, dt);
   };
   requestAnimationFrame(tick);
-  locate();
+  locateIfAllowed();
   setInterval(() => updateSky(state.stop), FEED_TTL * 2);
   document.addEventListener("visibilitychange", () => {
     running = !document.hidden;
