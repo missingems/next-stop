@@ -39,7 +39,7 @@
 <div class="card">
 <dl>
   <dt>1. The route line</dt>
-  <dd>Each service's path is OneMap's bus route line. Where a stretch of that line is broken, the gap is filled with a line routed along OpenStreetMap streets (using OSRM) through LTA's list of stops. A service OneMap doesn't draw uses that street-routed line all the way. Buses can only move along this line.</dd>
+  <dd>Each service has a detailed bus route line. Where a stretch of it is broken, the gap is filled with a line routed along OpenStreetMap streets (using OSRM) through LTA's list of stops. A service with no detailed line uses that street-routed line all the way. Buses can only move along this line.</dd>
   <dt>2. Distance along the route</dt>
   <dd>Every position becomes a number of metres from the start of the line. Each GPS reading is snapped onto the line, and your stop is a distance too, 5 m short of the pole so the bus pulls up just before it.</dd>
   <dt>3. The arrival time</dt>
@@ -130,7 +130,7 @@
 </figure>
 
 <h2>Data</h2>
-<p class="muted">Bus arrivals and stops: LTA DataMall. Route lines: OneMap, Singapore Land Authority, and © OpenStreetMap contributors, routed with OSRM.</p>
+<p class="muted">Bus arrivals and stops: LTA DataMall. Street routing: © OpenStreetMap contributors, with OSRM.</p>
 
 <nav><a href="./">Home</a><a href="support/">Support</a><a href="privacy.html">Privacy Policy</a></nav>
 </main>
