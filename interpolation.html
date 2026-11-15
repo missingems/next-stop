@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How Next Stop moves each bus smoothly along its route between LTA updates.">
+<title>Next Stop – How bus interpolation works</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="icon.png">
+<style>
+  figure { margin: 24px 0; }
+  figure svg { display: block; width: 100%; max-width: 560px; height: auto; color: var(--fg); }
+  figcaption { margin-top: 8px; font-size: 14px; color: var(--muted); }
+  .svg-muted { fill: var(--muted); }
+  .svg-line { stroke: var(--muted); }
+  .svg-road { stroke: var(--muted); stroke-opacity: .22; }
+  .svg-accent { fill: var(--accent); }
+  .svg-accent-stroke { stroke: var(--accent); }
+  .svg-bg { fill: var(--bg); }
+  dl { margin: 0; }
+  dt { font-weight: 600; margin-top: 14px; }
+  dd { margin: 2px 0 0; color: var(--fg); }
+  .card dl { padding: 2px 0 16px; }
+  code { font: 15px ui-monospace, "SF Mono", Menlo, monospace; }
+  .formula { font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--card); border-radius: 12px; padding: 12px 16px; }
+  .watch iframe { display: block; width: 100%; height: 760px; border: 0; border-radius: 16px; background: var(--card); }
+  @media (max-width: 480px) { header img { width: 52px; height: 52px; border-radius: 12px; } h1 { font-size: 25px; } }
+  .back { display: inline-block; margin-bottom: 20px; font-size: 15px; text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+<a class="back" href="./">‹ Next Stop</a>
+<header><img src="icon.png" alt=""><div><h1>How bus interpolation works</h1><div class="muted">How Next Stop moves buses between LTA updates</div></div></header>
+
+<p>The Land Transport Authority tells the app two things about each bus: where its GPS last put it, and when it should reach your stop. New readings don't come often, so a bus that only moved when LTA spoke would jump around the map. Next Stop drives each bus smoothly along its route instead, paced so it reaches your stop when LTA says it will.</p>
+
+<h2>Four inputs</h2>
+<div class="card">
+<dl>
+  <dt>1. The route line</dt>
+  <dd>Each service has a detailed bus route line. Where a stretch of it is broken, the gap is filled with a line routed along OpenStreetMap streets (using OSRM) through LTA's list of stops. A service with no detailed line uses that street-routed line all the way. Buses can only move along this line.</dd>
+  <dt>2. Distance along the route</dt>
+  <dd>Every position becomes a number of metres from the start of the line. Each GPS reading is snapped onto the line, and your stop is a distance too, 5 m short of the pole so the bus pulls up just before it.</dd>
+  <dt>3. The arrival time</dt>
+  <dd>LTA's estimated arrival at your stop. It sets the pace.</dd>
+  <dt>4. Speed limits</dt>
+  <dd>50 km/h on ordinary roads, and 60 km/h on stretches where stops are 1.5 km or more apart, like expressways. In normal driving no bus goes faster than 60 km/h.</dd>
+</dl>
+</div>
+
+<figure>
+<svg viewBox="0 0 400 210" role="img" aria-labelledby="fig1-title">
+  <title id="fig1-title">A GPS reading snapped onto the route line. An invisible shadow bus is paced to the arrival time, and the bus you see follows it. The bus waits 80 metres before the stop until a newer reading arrives.</title>
+  <line x1="16" y1="120" x2="384" y2="120" class="svg-road" stroke-width="16" stroke-linecap="round"/>
+  <line x1="16" y1="120" x2="384" y2="120" class="svg-line" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <!-- GPS reading -->
+  <circle cx="74" cy="50" r="6" class="svg-accent"/>
+  <line x1="74" y1="58" x2="74" y2="110" class="svg-accent-stroke" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <circle cx="74" cy="120" r="4" class="svg-accent"/>
+  <text x="84" y="45" font-size="14" fill="currentColor">LTA GPS reading</text>
+  <text x="84" y="64" font-size="13" class="svg-muted">snapped onto the line</text>
+  <!-- visible bus and shadow -->
+  <rect x="140" y="111" width="34" height="18" rx="5" fill="currentColor"/>
+  <rect x="190" y="111" width="34" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <path d="M178 104 Q 190 92 202 104" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <path d="M199 100 l3 4 l-5 1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <text x="140" y="148" font-size="14" fill="currentColor">bus</text>
+  <text x="190" y="148" font-size="14" fill="currentColor">shadow</text>
+  <text x="190" y="87" font-size="13" text-anchor="middle" class="svg-muted">follows</text>
+  <!-- hold zone and stop -->
+  <line x1="290" y1="98" x2="356" y2="98" class="svg-accent-stroke" stroke-width="1.5"/>
+  <line x1="290" y1="93" x2="290" y2="103" class="svg-accent-stroke" stroke-width="1.5"/>
+  <line x1="356" y1="93" x2="356" y2="103" class="svg-accent-stroke" stroke-width="1.5"/>
+  <text x="323" y="88" font-size="14" text-anchor="middle" fill="currentColor">80 m</text>
+  <line x1="362" y1="100" x2="362" y2="140" stroke="currentColor" stroke-width="2"/>
+  <rect x="355" y="92" width="14" height="10" rx="2" fill="currentColor"/>
+  <text x="384" y="160" font-size="14" text-anchor="end" fill="currentColor">your stop</text>
+  <text x="384" y="175" font-size="13" text-anchor="end" class="svg-muted">LTA: due in 3 min</text>
+  <!-- distance axis -->
+  <line x1="16" y1="195" x2="300" y2="195" class="svg-line" stroke-width="1"/>
+  <path d="M300 191 l6 4 l-6 4" fill="none" class="svg-line" stroke-width="1"/>
+  <text x="16" y="188" font-size="13" class="svg-muted">distance along the route</text>
+</svg>
+<figcaption>One bus approaching your stop. The times and distances here are an example.</figcaption>
+</figure>
+
+<h2>Finding the bus on the line</h2>
+<p>A route can pass the same road twice, in a loop or on the way back. So the app looks at every place on the line within 120 m of the GPS reading, and asks whether a bus there could reach your stop in the time LTA gives. A place is ruled out if the bus would need to go faster than 60 km/h, or move more than 2.5 times faster or 5 times slower than a bus normally would on that stretch, with a minute of slack either way. Among the places that fit, it picks the one nearest the reading and facing the way the bus is travelling, with a nudge towards where the bus was last time.</p>
+
+<h2>A speed map of every route</h2>
+<p>The app cuts each route into 5 m pieces and gives every piece a normal travel time. Pieces are slower where the bus is pulling into or out of a stop and on bends, and the time also depends on how far apart the stops are. They are never faster than the speed limit. Adding up the pieces gives the normal time between any two points on the route.</p>
+
+<figure>
+<svg viewBox="0 0 400 170" role="img" aria-labelledby="fig2-title">
+  <title id="fig2-title">Normal travel time per metre along a route: higher around each stop and at a bend, never below the speed limit's floor.</title>
+  <line x1="30" y1="130" x2="384" y2="130" class="svg-line" stroke-width="1"/>
+  <line x1="30" y1="20" x2="30" y2="130" class="svg-line" stroke-width="1"/>
+  <line x1="30" y1="104" x2="384" y2="104" class="svg-line" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="384" y="121" font-size="13" text-anchor="end" class="svg-muted">speed limit floor</text>
+  <path d="M30 92 L70 92 C 86 92, 92 40, 104 34 L108 34 C 112 34, 116 70, 130 86 L180 88 C 200 88, 206 64, 216 64 C 226 64, 232 88, 250 88 L290 88 C 302 88, 308 46, 318 42 L322 42 C 328 42, 330 76, 344 86 L384 88" fill="none" class="svg-accent-stroke" stroke-width="2.2"/>
+  <g fill="currentColor">
+    <rect x="103" y="134" width="6" height="6" rx="1"/>
+    <rect x="317" y="134" width="6" height="6" rx="1"/>
+  </g>
+  <text x="106" y="156" font-size="13" text-anchor="middle" fill="currentColor">stop</text>
+  <text x="216" y="156" font-size="13" text-anchor="middle" fill="currentColor">bend</text>
+  <text x="320" y="156" font-size="13" text-anchor="middle" fill="currentColor">stop</text>
+  <text x="38" y="16" font-size="13" class="svg-muted">time per metre</text>
+</svg>
+<figcaption>The shape of a route's speed map. Higher means slower.</figcaption>
+</figure>
+
+<h2>Pacing to the arrival time</h2>
+<p>From the speed map, the app knows the normal time from the bus to your stop. LTA says how many seconds are actually left. Dividing one by the other gives the pace:</p>
+<p class="formula">pace = normal time left ÷ seconds LTA says are left</p>
+<p>Pace is capped at 2.5, so a bus never rushes more than 2.5 times its normal speed to meet an arrival time. An invisible shadow bus drives at that pace through the speed map, never above the limit, and brakes smoothly into the stop. The bus you see follows the shadow, closing the gap over about two seconds so it never jerks. If LTA gives no arrival time, the bus uses a pace learned from how fast it has really been moving between readings, kept between 0.2 and 2.5.</p>
+
+<h2>When a new reading arrives</h2>
+<p>The shadow moves to the new spot on the line straight away, and the bus you see drives to catch up. If the new reading is well ahead, up to 1.5 km, the bus may briefly go up to 90 km/h (1.5 times the 60 km/h cap) to get there, then settles back. If the new reading is a little behind, the bus holds still until the shadow catches up, instead of reversing. A reading more than 600 m behind, or more than 1.5 km ahead, moves the bus straight to the new spot.</p>
+
+<h2>Not running ahead of LTA</h2>
+<p>While the latest GPS reading is more than 80 m from your stop, the bus on the map drives no further than 80 m short of it. It covers the last stretch only once a reading puts the real bus that close, so the map doesn't run far ahead of what LTA has seen.</p>
+
+<h2>Watch it</h2>
+<p>This replays real LTA readings recorded at Raffles Hotel (stop 02049) through the same snapping and pacing as the app. Rings show where LTA last reported each bus, and how old that report was.</p>
+<figure class="watch">
+<iframe src="https://missingems.github.io/NextStopOps/watch.html" title="Replay of real buses approaching Raffles Hotel" loading="lazy"></iframe>
+<figcaption><a href="https://missingems.github.io/NextStopOps/watch.html" rel="noopener">Open the replay full screen</a>. Contains information from LTA DataMall, made available under the Singapore Open Data Licence.</figcaption>
+</figure>
+
+<h2>Data</h2>
+<p class="muted">Bus arrivals and stops: LTA DataMall. Street routing: © OpenStreetMap contributors, with OSRM.</p>
+
+<nav><a href="./">Home</a><a href="support/">Support</a><a href="privacy.html">Privacy Policy</a></nav>
+</main>
+</body>
+</html>
