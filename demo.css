@@ -105,7 +105,12 @@ button { font: inherit; color: inherit; }
 .ticks span:last-child { left: auto; right: 0; transform: none; }
 
 .cta { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 0.5px solid var(--hairline); }
-.cta h2 { margin: 0; font: 600 15px/1.2 var(--text); color: var(--muted); }
+.themes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; width: 100%; margin: 0 0 4px; padding: 0; list-style: none; }
+.themes li { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; font: 600 11px/1.2 var(--text); color: var(--muted); }
+.themes img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px; box-shadow: 0 0 0 0.5px var(--hairline); }
+.how { font: 600 13px/1.2 var(--text); color: var(--tint); text-decoration: none; }
+.how:hover { text-decoration: underline; text-underline-offset: 3px; }
+.how:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; border-radius: 4px; }
 .download { display: block; line-height: 0; border-radius: 10px; transition: transform 0.15s ease; }
 .download img { display: block; width: 150px; height: 50px; }
 .download:hover { transform: translateY(-1px); }
