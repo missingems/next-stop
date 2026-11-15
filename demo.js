@@ -434,6 +434,7 @@ class Bus {
     this.route = route;
     this.lane = lane;
     this.cruise = 8 + Math.random() * 3;
+    this.phase = Math.random() * Math.PI * 2;
     this.opacity = 0;
     this.sign = { number: route.service, destination: route.destination };
     this.bubbleElement = document.createElement("div");
@@ -455,6 +456,7 @@ class Bus {
 
   spawn(distance) {
     this.distance = distance;
+    this.trailFrom = distance;
     this.speed = this.cruise;
     this.state = "driving";
     this.dwell = 0;
@@ -909,7 +911,7 @@ layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec2 a_uv;
 uniform mat4 u_matrix, u_model;
-uniform vec4 u_variant;
+uniform vec4 u_variant, u_play;
 uniform float u_paletteCount;
 out vec3 v_normal, v_local, v_localNormal;
 out vec2 v_uv;
@@ -927,11 +929,15 @@ void main() {
   p.z += u_variant.y / 2.0;
   vec3 normal = dot(a_normal, p - vec3(0, 1.6, 0)) < 0.0 ? -a_normal : a_normal;
   vec3 position = p + normal * trimOffset(int(a_uv.x * u_paletteCount));
+  v_local = position;
+  v_localNormal = normal;
+  float c = cos(u_play.z), s = sin(u_play.z);
+  position.yz = vec2(c * position.y - s * position.z, s * position.y + c * position.z);
+  normal.yz = vec2(c * normal.y - s * normal.z, s * normal.y + c * normal.z);
+  position.y += u_play.y;
   vec4 world = u_model * vec4(position, 1);
   gl_Position = u_matrix * vec4(world.x, world.z, world.y, 1);
   v_normal = normalize((u_model * vec4(normal, 0)).xyz);
-  v_local = position;
-  v_localNormal = normal;
   v_uv = a_uv;
 }`;
 
@@ -959,6 +965,7 @@ const float deckCut = 2.73, bendCut = -2.1, panePitch = 1.225;
 struct Hit { float distance; vec3 normal; vec3 color; };
 
 float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+${Muffin.COAT}
 
 void ellipsoid(vec3 origin, vec3 direction, vec3 center, vec3 radii, vec3 color, inout Hit hit) {
   vec3 offset = (origin - center) / radii;
@@ -1193,12 +1200,28 @@ vec3 shade() {
   vec3 albedo = texture(u_baseColor, v_uv).rgb;
   float gloss = 1.0 - texture(u_roughness, v_uv).r;
   if (slot == bodySlot) albedo = livery(albedo, p, n);
+  bool coated = false;
+  vec3 coat = albedo;
+  if (u_kids > 0.5) {
+    if ((slot == bodySlot || slot == skirtSlot) && !all(equal(albedo, bandColor))) {
+      coat = kidsCoat(p, n, smoothstep(0.03, 0.12, length(fwidth(p))));
+      coated = true;
+    } else if (slot == 2) {
+      coat = u_cream;
+      coated = true;
+    } else if (slot == 13) {
+      coat = u_patch;
+      coated = true;
+    }
+  }
   if (u_variant.z > 0.5 && (slot == bodySlot || slot == skirtSlot) && !inserted && abs(n.x) > 0.5) {
     vec2 edge = abs(vec2(p.z - 2.25, p.y - 0.8)) - vec2(0.48, 0.12);
     if (length(max(edge, 0.0)) + min(max(edge.x, edge.y), 0.0) < 0.06) {
       albedo = abs(p.y - 0.74) < 0.022 ? vec3(0.92) : operatorColor(int(u_variant.z + 0.5));
+      coated = false;
     }
   }
+  if (coated && insert == 0) return kidsLit(coat, normalize(v_normal));
   if (insert == 1) glass = true;
   else if (insert == 2) albedo = bandColor;
   else if (insert == 3) { albedo = vec3(0.035) * (0.7 + 0.6 * step(0.5, fract(p.z * 7.0))); gloss = 0.1; }
@@ -1240,7 +1263,9 @@ void main() {
     fragColor = vec4(encode(u_outline.rgb) * alpha, alpha);
     return;
   }
-  fragColor = vec4(encode(shade()) * u_opacity, u_opacity);
+  vec3 color = encode(shade());
+  if (u_kids > 0.5) color = unfilter(color);
+  fragColor = vec4(color * u_opacity, u_opacity);
 }`;
 
 const BUS_SHADOW_VERTEX = `#version 300 es
@@ -1596,6 +1621,8 @@ class SceneryLayer {
   renderBuses(gl, matrix, sun, night, zoom) {
     const size = busScale(zoom);
     const swizzle = [1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1];
+    const kids = muffinStyle() ? Muffin.setup(gl) : null;
+    const time = reduceMotion ? 0 : this.now % 3600;
     for (const bus of this.buses) {
       const opacity = bus.opacity * clamp((zoom - 14) / 0.5, 0, 1);
       if (opacity < 0.01 || bus.state === "gone" && bus.opacity <= 0) continue;
@@ -1627,6 +1654,26 @@ class SceneryLayer {
       gl.bindVertexArray(this.empty);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+      // Muffin: the RouteBusLayer bob and pitch, and the trail's ground marks under the bus.
+      const animal = kids ? Muffin.animal(bus.route.service) : 0;
+      const palette = kids ? Muffin.colours(animal) : null;
+      const play = [0, 0, 0, 0];
+      let trail = null;
+      if (kids) {
+        if (!reduceMotion && bus.speed > 0.25) {
+          const movement = Math.min((bus.speed - 0.25) / 2, 1);
+          const phase = (time * 5.2 + bus.phase) % (Math.PI * 2);
+          play[1] = (1 - Math.cos(phase)) * 0.045 * movement;
+          play[2] = Math.sin(phase) * 0.012 * movement;
+        }
+        trail = Muffin.trail(bus, size, (at) => {
+          const a = (bus.route.heading(at) * Math.PI) / 180;
+          const [rx, ry] = bus.route.at(at);
+          return [this.local(toLngLat([rx - Math.cos(a) * 1.6, ry - Math.sin(a) * 1.6])), [Math.sin(a), -Math.cos(a)]];
+        });
+        this.drawKidsMarks(gl, kids, trail.ground, matrix, sun, night, opacity, size, time, animal, palette);
+      }
+
       const program = this.busProgram, u = program.uniforms;
       gl.useProgram(program.program);
       gl.uniformMatrix4fv(u.u_matrix, false, matrix);
@@ -1639,6 +1686,14 @@ class SceneryLayer {
       gl.uniform1f(u.u_occupancy, BUS_OCCUPANCY[bus.load.color] ?? 0.5);
       gl.uniform1f(u.u_night, night);
       gl.uniform1f(u.u_opacity, opacity);
+      gl.uniform4f(u.u_play, ...play);
+      gl.uniform1f(u.u_kids, kids ? 1 : 0);
+      gl.uniform1f(u.u_animal, animal);
+      if (palette) {
+        gl.uniform3f(u.u_fur, ...palette.fur);
+        gl.uniform3f(u.u_cream, ...palette.cream);
+        gl.uniform3f(u.u_patch, ...palette.patch);
+      }
       for (const [unit, texture, name] of [[0, this.bus.baseColor, "u_baseColor"], [1, this.bus.roughness, "u_roughness"], [2, this.signTexture(bus.sign), "u_sign"]]) {
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -1653,8 +1708,73 @@ class SceneryLayer {
       gl.depthMask(true);
       if (opacity >= 1) gl.disable(gl.BLEND);
       gl.drawElements(gl.TRIANGLES, this.bus.count, gl.UNSIGNED_SHORT, 0);
+
+      if (kids) {
+        const decoration = kids.decorationFor(animal, kind.lift), d = kids.decoration.uniforms;
+        gl.useProgram(kids.decoration.program);
+        gl.uniformMatrix4fv(d.u_matrix, false, matrix);
+        gl.uniformMatrix4fv(d.u_model, false, model);
+        gl.uniform4f(d.u_play, ...play);
+        gl.uniform1f(d.u_wag, reduceMotion ? 0 : Math.sin(time * 5.5 + bus.phase * 3) * 0.2);
+        gl.uniform3f(d.u_light, sun[0], sun[1], sun[2]);
+        gl.uniform1f(d.u_night, night);
+        gl.uniform1f(d.u_opacity, opacity);
+        for (const name of ["fur", "cream", "pink", "tailTip", "patch"]) gl.uniform3f(d[`u_${name}`], ...palette[name]);
+        gl.bindVertexArray(decoration.vao);
+        gl.drawElements(gl.TRIANGLES, decoration.count, gl.UNSIGNED_INT, 0);
+        this.drawKidsSprouts(gl, kids, trail, matrix, sun, night, opacity, size, time, palette);
+      }
     }
     gl.activeTexture(gl.TEXTURE0);
+  }
+
+  // RouteKidsMark.draw: soft flower shadows and paw prints, blended onto the ground.
+  drawKidsMarks(gl, kids, marks, matrix, sun, night, opacity, size, time, animal, palette) {
+    if (!marks.length) return;
+    const m = kids.mark.uniforms;
+    gl.useProgram(kids.mark.program);
+    gl.uniformMatrix4fv(m.u_matrix, false, matrix);
+    gl.uniform3f(m.u_light, sun[0], sun[1], sun[2]);
+    gl.uniform1f(m.u_night, night);
+    gl.uniform1f(m.u_time, time);
+    gl.uniform1f(m.u_moving, reduceMotion ? 0 : 1);
+    gl.uniform1f(m.u_size, size);
+    gl.uniform1f(m.u_opacity, opacity);
+    gl.uniform1f(m.u_animal, animal);
+    gl.uniform3f(m.u_patch, ...palette.patch);
+    gl.bindBuffer(gl.ARRAY_BUFFER, kids.instances);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(marks.flat()), gl.DYNAMIC_DRAW);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(false);
+    gl.bindVertexArray(kids.marks);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, marks.length);
+  }
+
+  // RouteKidsBusDecorations.drawSprouts: the flowers and grass themselves.
+  drawKidsSprouts(gl, kids, trail, matrix, sun, night, opacity, size, time, palette) {
+    const s = kids.sprout.uniforms;
+    gl.useProgram(kids.sprout.program);
+    gl.uniformMatrix4fv(s.u_matrix, false, matrix);
+    gl.uniform3f(s.u_light, sun[0], sun[1], sun[2]);
+    gl.uniform1f(s.u_night, night);
+    gl.uniform1f(s.u_time, time);
+    gl.uniform1f(s.u_moving, reduceMotion ? 0 : 1);
+    gl.uniform1f(s.u_size, size);
+    gl.uniform1f(s.u_opacity, opacity);
+    gl.uniform3f(s.u_pink, ...palette.pink);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    for (const [mesh, marks] of [[kids.flower, trail.flowers], [kids.grass, trail.grass]]) {
+      if (!marks.length) continue;
+      gl.bindBuffer(gl.ARRAY_BUFFER, kids.instances);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(marks.flat()), gl.DYNAMIC_DRAW);
+      gl.bindVertexArray(mesh.vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0, marks.length);
+    }
   }
 }
 
@@ -2503,11 +2623,13 @@ function setSky(sky) {
   applySkyToScenery();
 }
 
+const muffinStyle = () => document.documentElement.dataset.mapStyle === "muffin";
+
 function updateBusSize() {
   const zoom = state.map.getZoom();
   document.documentElement.classList.toggle("far", zoom < 14.5);
   const pixels = pixelsPerMeter(zoom) * busScale(zoom);
-  const rise = 4 * pixels * Math.sin((state.map.getPitch() * Math.PI) / 180);
+  const rise = (muffinStyle() ? 6.2 : 4) * pixels * Math.sin((state.map.getPitch() * Math.PI) / 180);
   for (const bus of state.buses) bus.bubbleMarker.setOffset([4, -rise - 8]);
 }
 
@@ -2615,6 +2737,7 @@ async function start() {
     showStop(next, stop, true);
   });
   setupSearch();
+  document.addEventListener("mapstylechange", updateBusSize);
   if (!theme) darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
   addEventListener("resize", () => {
     state.weather.resize();

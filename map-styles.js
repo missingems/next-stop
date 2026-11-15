@@ -21,6 +21,7 @@
     } else {
       dither?.remove();
     }
+    document.dispatchEvent(new CustomEvent("mapstylechange", { detail: style }));
   }
 
   buttons.forEach((button) => button.addEventListener("click", () => apply(button.dataset.style)));
