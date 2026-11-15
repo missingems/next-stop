@@ -2162,6 +2162,169 @@ function locateIfAllowed() {
 }
 
 
+// Search: every bus stop in Singapore, loaded on first use. Picking one loads the stops and route lines
+// of its 2 km tile (data/stops/<tile>.json, from tools/export_stops.py) and shows it like any other stop.
+
+const NEARBY_PINS = 400;
+const MAX_RESULTS = 8;
+const WORDS = { station: "stn", block: "blk", opposite: "opp", after: "aft", before: "bef", interchange: "int", road: "rd", avenue: "ave", street: "st", terminal: "ter", primary: "pr", secondary: "sec", school: "sch", community: "c", centre: "ctr", center: "ctr" };
+const search = { index: null, loading: null, cell: 0.02, tiles: new Map() };
+const normalise = (text) => text.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+
+function stopIndex() {
+  search.loading ??= fetch("data/stops.json")
+    .then((response) => {
+      if (!response.ok) throw new Error(`stops ${response.status}`);
+      return response.json();
+    })
+    .then((data) => {
+      search.cell = data.cell;
+      search.index = data.stops.map(([code, name, road, lng, lat]) => ({ code, name, road, lngLat: [lng, lat], name_: normalise(name), words: normalise(`${name} ${road}`).split(" ") }));
+      return search.index;
+    })
+    .catch((error) => {
+      search.loading = null;
+      throw error;
+    });
+  return search.loading;
+}
+
+function matchStops(query) {
+  const text = normalise(query);
+  if (!text) return [];
+  const tokens = text.split(" ").map((token) => WORDS[token] ?? token);
+  const scored = [];
+  for (const stop of search.index) {
+    let score;
+    if (stop.code === text) score = 0;
+    else if (/^\d+$/.test(text) && stop.code.startsWith(text)) score = 1;
+    else if (tokens.every((token) => stop.words.some((word) => word.startsWith(token)))) score = stop.name_.startsWith(tokens[0]) ? 2 : 3;
+    else continue;
+    scored.push([score, stop]);
+  }
+  scored.sort((a, b) => a[0] - b[0] || a[1].name.length - b[1].name.length || a[1].code.localeCompare(b[1].code));
+  return scored.slice(0, MAX_RESULTS).map(([, stop]) => stop);
+}
+
+async function loadStop(code) {
+  const curated = state.areas.find((area) => area.stops.some((stop) => stop.code === code));
+  if (curated) return [curated, curated.stops.find((stop) => stop.code === code)];
+  const entry = (await stopIndex()).find((stop) => stop.code === code);
+  if (!entry) return null;
+  const [lng, lat] = entry.lngLat;
+  const tile = `${Math.floor(lat / search.cell)}_${Math.floor(lng / search.cell)}`;
+  if (!search.tiles.has(tile)) {
+    search.tiles.set(tile, fetch(`data/stops/${tile}.json`).then((response) => {
+      if (!response.ok) throw new Error(`tile ${response.status}`);
+      return response.json();
+    }).then((data) => data.stops));
+  }
+  let stops;
+  try {
+    stops = await search.tiles.get(tile);
+  } catch (error) {
+    search.tiles.delete(tile);
+    throw error;
+  }
+  const stop = stops.find((other) => other.code === code);
+  if (!stop) return null;
+  const nearby = stops
+    .filter((other) => distance(other.lngLat, stop.lngLat) < NEARBY_PINS)
+    .sort((a, b) => distance(a.lngLat, stop.lngLat) - distance(b.lngLat, stop.lngLat))
+    .slice(0, 8);
+  return [{ key: `stop-${code}`, name: stop.name, stops: nearby }, stop];
+}
+
+function setupSearch() {
+  const tray = document.querySelector(".tray");
+  const button = document.getElementById("find");
+  const panel = document.getElementById("search");
+  const input = document.getElementById("search-input");
+  const list = document.getElementById("search-results");
+  let results = [], active = -1, query = 0;
+
+  const note = (text) => {
+    const item = document.createElement("li");
+    item.className = "empty";
+    item.textContent = text;
+    list.replaceChildren(item);
+  };
+  const highlight = (index) => {
+    active = index;
+    [...list.querySelectorAll("button")].forEach((item, i) => item.classList.toggle("active", i === active));
+    list.querySelectorAll("button")[active]?.scrollIntoView({ block: "nearest" });
+  };
+  const render = (found) => {
+    results = found;
+    active = -1;
+    if (!found.length) return normalise(input.value) ? note("No bus stops match") : list.replaceChildren();
+    list.replaceChildren(...found.map((stop) => {
+      const item = document.createElement("li");
+      const choice = document.createElement("button");
+      choice.type = "button";
+      const name = document.createElement("b");
+      name.textContent = stop.name;
+      const detail = document.createElement("span");
+      const code = document.createElement("code");
+      code.textContent = stop.code;
+      detail.append(code, ` · ${stop.road}`);
+      choice.append(name, detail);
+      choice.addEventListener("click", () => choose(stop));
+      item.append(choice);
+      return item;
+    }));
+  };
+  const open = (opened) => {
+    panel.hidden = !opened;
+    tray.classList.toggle("searching", opened);
+    button.setAttribute("aria-expanded", String(opened));
+    if (!opened) return;
+    input.value = "";
+    render([]);
+    input.focus();
+    stopIndex().catch(() => {});
+  };
+  async function choose(stop) {
+    if (!stop) return;
+    try {
+      const found = await loadStop(stop.code);
+      if (!found) return note("That stop has no buses to show");
+      open(false);
+      showStop(found[0], found[1], true);
+    } catch {
+      note("Couldn't load that stop. Try again.");
+    }
+  }
+
+  button.addEventListener("click", () => open(panel.hidden));
+  input.addEventListener("input", async () => {
+    const mine = ++query;
+    if (!normalise(input.value)) return render([]);
+    try {
+      await stopIndex();
+    } catch {
+      return note("Couldn't load bus stops. Try again.");
+    }
+    if (mine === query) render(matchStops(input.value));
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      open(false);
+      button.focus();
+    } else if (event.key === "ArrowDown" && results.length) {
+      event.preventDefault();
+      highlight((active + 1) % results.length);
+    } else if (event.key === "ArrowUp" && results.length) {
+      event.preventDefault();
+      highlight((active - 1 + results.length) % results.length);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      choose(results[Math.max(active, 0)]);
+    }
+  });
+}
+
+
 function pinElement(stop) {
   const element = document.createElement("button");
   element.type = "button";
@@ -2399,8 +2562,15 @@ async function start() {
   state.dark = theme ? theme === "dark" : darkQuery.matches;
   document.documentElement.dataset.theme = state.dark ? "dark" : "light";
 
-  const area = chooseArea();
-  const stop = chooseStop(area, true);
+  let area, stop;
+  const wanted = params.get("stop");
+  if (wanted && !state.areas.some((candidate) => candidate.stops.some((other) => other.code === wanted))) {
+    [area, stop] = (await loadStop(wanted).catch(() => null)) ?? [];
+  }
+  if (!area) {
+    area = chooseArea();
+    stop = chooseStop(area, true);
+  }
   const map = new maplibregl.Map({
     container: "map",
     style: themedStyle(style, state.dark),
@@ -2444,6 +2614,7 @@ async function start() {
     const [next, stop] = pick(stops);
     showStop(next, stop, true);
   });
+  setupSearch();
   if (!theme) darkQuery.addEventListener("change", (event) => applyTheme(event.matches));
   addEventListener("resize", () => {
     state.weather.resize();

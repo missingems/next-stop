@@ -22,12 +22,19 @@
   <div class="grabber" aria-hidden="true"></div>
   <div class="tray-head">
     <div id="stop" class="stop"><b></b><span><code></code> <i></i></span></div>
+    <button id="find" type="button" aria-label="Search for a bus stop" title="Search bus stops" aria-expanded="false" aria-controls="search">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </button>
     <button id="locate" type="button" aria-label="Show the bus stop nearest to me" title="Nearest bus stop">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20.5 3.5 3.8 10.4c-.8.3-.7 1.5.1 1.7l6.6 1.4 1.4 6.6c.2.8 1.4.9 1.7.1z" fill="currentColor"/></svg>
     </button>
     <button id="shuffle" type="button" aria-label="Show another bus stop" title="Another bus stop">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 7h3.5c2 0 3.2.9 4.3 2.6l2.4 4.8c1.1 1.7 2.3 2.6 4.3 2.6H21M3 17h3.5c2 0 3.2-.9 4.3-2.6M13.2 9.6c1.1-1.7 2.3-2.6 4.3-2.6H21M18 4l3 3-3 3M18 14l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
+  </div>
+  <div id="search" class="search" hidden>
+    <input id="search-input" type="search" placeholder="Stop name, code or road" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Search bus stops" aria-controls="search-results">
+    <ul id="search-results" aria-label="Matching bus stops"></ul>
   </div>
   <div class="timeline">
     <div class="track"><span class="now"></span><div id="plates"></div></div>
