@@ -706,12 +706,12 @@ class MeshBuilder {
     }
   }
 
-  prism(height, bottom, top, sides, material) {
+  prism(height, bottom, top, sides, material, [x, y, z] = [0, 0, 0]) {
     for (let side = 0; side < sides; side++) {
       const a = side / sides * Math.PI * 2, b = (side + 1) / sides * Math.PI * 2, m = (a + b) / 2;
       this.quad([
-        [Math.cos(a) * bottom, 0, Math.sin(a) * bottom], [Math.cos(a) * top, height, Math.sin(a) * top],
-        [Math.cos(b) * bottom, 0, Math.sin(b) * bottom], [Math.cos(b) * top, height, Math.sin(b) * top],
+        [x + Math.cos(a) * bottom, y, z + Math.sin(a) * bottom], [x + Math.cos(a) * top, y + height, z + Math.sin(a) * top],
+        [x + Math.cos(b) * bottom, y, z + Math.sin(b) * bottom], [x + Math.cos(b) * top, y + height, z + Math.sin(b) * top],
       ], unit3([Math.cos(m), (bottom - top) / height, Math.sin(m)]), material);
     }
   }
@@ -830,10 +830,11 @@ vec4 project(vec3 world) { return u_matrix * vec4(world.x, world.z, world.y, 1.0
 `;
 
 const SCENERY_VERTEX = SCENERY_COMMON + `
-out vec3 v_normal;
+out vec3 v_normal, v_local;
 out float v_material, v_seed, v_height, v_visibility;
 void main() {
   gl_Position = project(sceneryPlace());
+  v_local = a_position.xyz;
   v_normal = vec3(0.0, a_normal.y, 0.0);
   v_normal.xz = rotate2(a_normal.xz, a_placement.w);
   v_material = a_position.w;
@@ -845,13 +846,14 @@ void main() {
 const SCENERY_FRAGMENT = `#version 300 es
 precision highp float;
 uniform vec4 u_light, u_sky;
-in vec3 v_normal;
+in vec3 v_normal, v_local;
 in float v_material, v_seed, v_height, v_visibility;
 out vec4 fragColor;
 vec3 encode(vec3 c) {
   c = clamp(c, 0.0, 1.0);
   return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
 }
+${Muffin.SCENERY_KIDS}
 void main() {
   float threshold = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   if (v_visibility < 0.999 && v_visibility <= threshold) discard;
@@ -878,12 +880,15 @@ void main() {
     emissive = color * 0.55 * night;
   }
   else if (material == 11) { color = vec3(0.95, 0.36, 0.02); emissive = vec3(0.5, 0.18, 0.0) * night; }
+  vec3 kidsColor, kidsGlow;
+  bool kids = kidsMaterial(material, v_local, night, kidsColor, kidsGlow);
+  if (kids) { color = kidsColor; emissive = kidsGlow; }
   vec3 normal = normalize(v_normal);
   float sun = clamp(dot(normal, u_light.xyz), 0.0, 1.0);
   float sky = 0.55 + 0.45 * clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
   float daylight = 1.0 - night * 0.7;
   vec3 lit = color * (sky * mix(0.62, 0.16, night) + sun * 0.55 * daylight * u_sky.rgb) + emissive;
-  fragColor = vec4(encode(lit), 1.0);
+  fragColor = vec4(kids ? unfilter(encode(lit)) : encode(lit), 1.0);
 }`;
 
 const CAST_VERTEX = SCENERY_COMMON + `
@@ -1451,6 +1456,10 @@ class SceneryLayer {
     this.shadow = mesh(treeShadowMesh(), this.instanceBuffer);
     this.pole = mesh(stopPoleMesh(), this.poleBuffer);
     this.shelter = mesh(shelterMesh(), this.shelterBuffer);
+    // Muffin: the app's four kids shelters, one per stop by its code, and the kids stop pole.
+    this.kidsShelterBuffers = [0, 1, 2, 3].map(() => gl.createBuffer());
+    this.kidsShelters = Muffin.shelterBuilders(MeshBuilder).map((builder, i) => mesh(builder, this.kidsShelterBuffers[i]));
+    this.kidsPole = mesh(Muffin.poleBuilder(MeshBuilder), this.poleBuffer);
     this.empty = gl.createVertexArray();
     this.loadBus();
     if (this.pending) this.upload(this.pending);
@@ -1542,15 +1551,18 @@ class SceneryLayer {
     const scale = Math.max(1, 14 / (POLE_HEIGHT * ppm));
     const across = Math.max(CURB_OFFSET, Math.min(CURB_OFFSET * scale, 7 / ppm));
     const poles = new Float32Array(this.stops.length * 8), shelters = new Float32Array(this.stops.length * 8);
+    const variants = [[], [], [], []];
     this.stops.forEach((stop, i) => {
       const [x, z] = this.local(stop.lngLat);
       const h = (stop.heading * Math.PI) / 180;
       const forward = [Math.sin(h), -Math.cos(h)], left = [-Math.cos(h), -Math.sin(h)];
       poles.set([x + left[0] * across, -10, z + left[1] * across, h, 1, 1, POLE_HEIGHT, 0.28], i * 8);
       const back = across + 2.4;
-      shelters.set([x + left[0] * back - forward[0] * 4, -10, z + left[1] * back - forward[1] * 4, h + Math.PI / 2, 1, 0, 1, 0], i * 8);
+      const shelter = [x + left[0] * back - forward[0] * 4, -10, z + left[1] * back - forward[1] * 4, h + Math.PI / 2, 1, 0, 1, 0];
+      shelters.set(shelter, i * 8);
+      variants[Muffin.shelterVariant(stop.code ?? "0")].push(...shelter);
     });
-    return { poles, shelters, scale };
+    return { poles, shelters, variants: variants.map((list) => new Float32Array(list)), scale };
   }
 
   render(gl, options) {
@@ -1579,12 +1591,27 @@ class SceneryLayer {
       gl.bindVertexArray(target.vao);
       gl.drawElementsInstanced(gl.TRIANGLES, target.count, gl.UNSIGNED_SHORT, 0, count);
     };
-    const { poles, shelters } = this.stopInstances(zoom);
+    const { poles, shelters, variants } = this.stopInstances(zoom);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.poleBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, poles, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.shelterBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, shelters, gl.DYNAMIC_DRAW);
     const stops = this.stops.length;
+    const muffin = muffinStyle();
+    const pole = muffin ? this.kidsPole : this.pole;
+    if (muffin) {
+      variants.forEach((list, i) => {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.kidsShelterBuffers[i]);
+        gl.bufferData(gl.ARRAY_BUFFER, list, gl.DYNAMIC_DRAW);
+      });
+    }
+    const drawShelters = () => {
+      if (!muffin) {
+        if (stops) instanced(this.shelter, stops);
+        return;
+      }
+      variants.forEach((list, i) => { if (list.length) instanced(this.kidsShelters[i], list.length / 8); });
+    };
 
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.STENCIL_TEST);
@@ -1597,18 +1624,18 @@ class SceneryLayer {
     setUniforms(this.cast, grow, SCENERY_RADIUS - SCENERY_FADE, SCENERY_RADIUS, treeMatrix);
     if (this.count) instanced(this.shadow, this.count);
     setUniforms(this.cast, 1, 1e9, 2e9);
-    if (stops) instanced(this.pole, stops);
+    if (stops) instanced(pole, stops);
     setUniforms(this.cast, grow, 1e9, 2e9);
-    if (stops) instanced(this.shelter, stops);
+    drawShelters();
 
     gl.disable(gl.BLEND);
     gl.depthFunc(gl.LEQUAL);
     setUniforms(this.scenery, grow, SCENERY_RADIUS - SCENERY_FADE, SCENERY_RADIUS, treeMatrix);
     if (this.count) instanced(this.tree, this.count);
     setUniforms(this.scenery, 1, 1e9, 2e9);
-    if (stops) instanced(this.pole, stops);
+    if (stops) instanced(pole, stops);
     setUniforms(this.scenery, grow, 1e9, 2e9);
-    if (stops) instanced(this.shelter, stops);
+    drawShelters();
 
     if (this.bus) this.renderBuses(gl, matrix, sun, night, zoom);
     gl.bindVertexArray(null);
@@ -1623,6 +1650,8 @@ class SceneryLayer {
     const swizzle = [1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1];
     const kids = muffinStyle() ? Muffin.setup(gl) : null;
     const time = reduceMotion ? 0 : this.now % 3600;
+    const world = invert(multiply(matrix, swizzle));
+    const camera = [world[8], world[9], world[10]].map((v) => v / (world[11] || 1));
     for (const bus of this.buses) {
       const opacity = bus.opacity * clamp((zoom - 14) / 0.5, 0, 1);
       if (opacity < 0.01 || bus.state === "gone" && bus.opacity <= 0) continue;
@@ -1723,6 +1752,12 @@ class SceneryLayer {
         gl.bindVertexArray(decoration.vao);
         gl.drawElements(gl.TRIANGLES, decoration.count, gl.UNSIGNED_INT, 0);
         this.drawKidsSprouts(gl, kids, trail, matrix, sun, night, opacity, size, time, palette);
+        if (!reduceMotion) {
+          const forward = [Math.sin(h), -Math.cos(h)], side = [Math.cos(h), Math.sin(h)];
+          const reach = (BUS_LENGTH / 2 + 0.2) * size;
+          const tailpipe = [x + side[0] * 0.75 * size - forward[0] * reach, z + side[1] * 0.75 * size - forward[1] * reach];
+          this.drawKidsTreats(gl, kids, Muffin.exhaust(bus, this.now, size, tailpipe, forward), matrix, sun, night, opacity, size, camera);
+        }
       }
     }
     gl.activeTexture(gl.TEXTURE0);
@@ -1750,6 +1785,32 @@ class SceneryLayer {
     gl.depthMask(false);
     gl.bindVertexArray(kids.marks);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, marks.length);
+  }
+
+  // RouteExhaustCloud: the treats a bus puffs out as it pulls away.
+  drawKidsTreats(gl, kids, puffs, matrix, sun, night, opacity, size, camera) {
+    if (!puffs.length) return;
+    const t = kids.treat.uniforms;
+    gl.useProgram(kids.treat.program);
+    gl.uniformMatrix4fv(t.u_matrix, false, matrix);
+    gl.uniform3f(t.u_light, sun[0], sun[1], sun[2]);
+    gl.uniform3f(t.u_eye, camera[0], camera[1], camera[2]);
+    gl.uniform1f(t.u_night, night);
+    gl.uniform1f(t.u_size, size);
+    gl.uniform1f(t.u_opacity, opacity);
+    gl.bindBuffer(gl.ARRAY_BUFFER, kids.instances);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(puffs.flat()), gl.DYNAMIC_DRAW);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(false);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    gl.frontFace(gl.CCW);
+    gl.bindVertexArray(kids.treats.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, kids.treats.count, gl.UNSIGNED_INT, 0, puffs.length);
+    gl.disable(gl.CULL_FACE);
+    gl.depthMask(true);
   }
 
   // RouteKidsBusDecorations.drawSprouts: the flowers and grass themselves.
@@ -1844,7 +1905,7 @@ function syncScenery() {
   layer.buses = state.buses;
   layer.stops = state.area.stops.map((stop) => {
     const entry = stop.services.find((service) => service.line);
-    return { lngLat: stop.lngLat, heading: entry ? new Route(entry).heading(entry.stopAt) : 0 };
+    return { code: stop.code, lngLat: stop.lngLat, heading: entry ? new Route(entry).heading(entry.stopAt) : 0 };
   });
   state.map.triggerRepaint();
 }
